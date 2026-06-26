@@ -74,6 +74,31 @@ code, reload plasmashell:
 kquitapp6 plasmashell && kstart plasmashell
 ```
 
+## Install with pacman (Arch / CachyOS)
+
+> Not on the AUR yet. New AUR account registration is disabled on Arch's side at
+> the moment, so I can't publish there. When it reopens it'll go up on the AUR too
+> (then it's just `paru -S dockswain`). Until then, install it straight from the
+> GitHub release repo below.
+
+Add this to `/etc/pacman.conf`:
+
+```ini
+[dockswain]
+SigLevel = Optional TrustAll
+Server = https://github.com/SancaK9/Conqrex.Dockswain/releases/download/arch-repo
+```
+
+Then sync and install:
+
+```sh
+sudo pacman -Syu dockswain
+```
+
+Updates ride along with a normal `sudo pacman -Syu`. The packages aren't signed yet,
+which is why the repo line needs `SigLevel = Optional TrustAll`. After it's installed,
+add the widget the usual way: right-click the panel or desktop → Add Widgets → Dockswain.
+
 ## Using it
 
 - **Tabs** across the top of the popup: each open server is its own tab with its own
