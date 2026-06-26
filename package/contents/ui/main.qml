@@ -161,6 +161,8 @@ PlasmoidItem {
     function fetchLogs(id, cb, t)  { if (activeSession) activeSession.fetchLogs(id, cb, t); }
     function refreshDisk(cb)       { if (activeSession) activeSession.refreshDisk(cb); }
     function doPrune(w, cb)        { if (activeSession) activeSession.doPrune(w, cb); }
+    function containerLogs(cb)     { if (activeSession) activeSession.containerLogs(cb); }
+    function truncateLog(id, cb)   { if (activeSession) activeSession.truncateLog(id, cb); }
     function openInKate(p)         { if (activeSession) activeSession.openInKate(p); }
     function readFile(p, cb)       { if (activeSession) activeSession.readFile(p, cb); }
     function nginxInfo(cb)         { if (activeSession) activeSession.nginxInfo(cb); }

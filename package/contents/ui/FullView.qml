@@ -35,6 +35,8 @@ Item {
     property bool sslRunning: false
     property var diskData: null
     property string diskResult: ""
+    property var diskLogs: []
+    property real diskLogsTotal: 0
 
     function reasonText(r) {
         switch (r) {
@@ -204,8 +206,11 @@ Item {
     function openDisk() {
         diskData = null;
         diskResult = i18n("Loading…");
+        diskLogs = [];
+        diskLogsTotal = 0;
         diskOverlay.visible = true;
         loadDisk();
+        loadDiskLogs();
     }
     function loadDisk() {
         ctrl.refreshDisk(function (d) {
@@ -213,6 +218,34 @@ Item {
             else { fullView.diskData = null;
                    fullView.diskResult = i18n("Could not read disk usage (%1)", d ? d.reason : "error"); }
         });
+    }
+    function loadDiskLogs() {
+        ctrl.containerLogs(function (d) {
+            if (d && d.ok) { fullView.diskLogs = d.logs || []; fullView.diskLogsTotal = d.total || 0; }
+            else { fullView.diskLogs = []; fullView.diskLogsTotal = 0; }
+        });
+    }
+    function truncateContainerLog(id, name, size) {
+        fullView.confirm(i18n("Truncate the log of “%1” to zero?\nThis permanently discards %2 of log history.",
+                              name, Fmt.fmtBytes(size)),
+            function () {
+                fullView.diskResult = i18n("Truncating %1…", name);
+                ctrl.truncateLog(id, function (r) {
+                    fullView.diskResult = (r && r.ok)
+                        ? i18n("%1: log truncated", name)
+                        : i18n("%1: could not truncate (%2)", name, r ? fullView.logErr(r.reason) : "error");
+                    fullView.loadDisk();
+                    fullView.loadDiskLogs();
+                });
+            });
+    }
+    function logErr(reason) {
+        switch (reason) {
+        case "no_log":          return i18n("no log file (different logging driver)");
+        case "bad_path":        return i18n("unexpected log path");
+        case "truncate_failed": return i18n("permission denied — needs root or “sudo docker”");
+        default:                return reason || "error";
+        }
     }
     function pruneKeyFor(type) {
         return type === "Build Cache" ? "builder"
@@ -1151,7 +1184,7 @@ Item {
                     text: ctrl.active ? (ctrl.active.label || ctrl.active.host) : ""
                 }
                 PlasmaComponents.ToolButton {
-                    icon.name: "view-refresh"; onClicked: fullView.loadDisk()
+                    icon.name: "view-refresh"; onClicked: { fullView.loadDisk(); fullView.loadDiskLogs(); }
                     PlasmaComponents.ToolTip { text: i18n("Refresh") }
                 }
                 PlasmaComponents.ToolButton {
@@ -1249,7 +1282,74 @@ Item {
                 }
             }
 
-            Item { Layout.fillHeight: true }
+            // ---- per-container log file sizes (+ truncate) ----
+            Kirigami.Separator { Layout.fillWidth: true }
+            RowLayout {
+                Layout.fillWidth: true
+                PlasmaComponents.Label {
+                    Layout.fillWidth: true
+                    text: i18n("Container logs"); opacity: 0.7; font: Kirigami.Theme.smallFont
+                }
+                PlasmaComponents.Label {
+                    visible: fullView.diskLogsTotal > 0
+                    text: i18n("%1 total", Fmt.fmtBytes(fullView.diskLogsTotal))
+                    opacity: 0.7; font: Kirigami.Theme.smallFont
+                }
+            }
+
+            PlasmaComponents.ScrollView {
+                visible: fullView.diskLogs.length > 0
+                Layout.fillWidth: true
+                Layout.fillHeight: fullView.diskLogs.length > 0
+                Layout.minimumHeight: Kirigami.Units.gridUnit * 3
+                ListView {
+                    model: fullView.diskLogs
+                    clip: true
+                    boundsBehavior: Flickable.StopAtBounds
+                    delegate: RowLayout {
+                        id: logRow
+                        width: ListView.view ? ListView.view.width : 0
+                        spacing: Kirigami.Units.smallSpacing
+                        // real, not int: a 30 GB log overflows QML's 32-bit int.
+                        readonly property real sz: modelData.size
+
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            spacing: 0
+                            PlasmaComponents.Label {
+                                text: modelData.name; font.family: "monospace"
+                                elide: Text.ElideRight; Layout.fillWidth: true
+                            }
+                            PlasmaComponents.Label {
+                                Layout.fillWidth: true
+                                elide: Text.ElideRight
+                                opacity: 0.8; font: Kirigami.Theme.smallFont
+                                text: logRow.sz === -2 ? i18n("non-json logging driver")
+                                    : logRow.sz < 0 ? i18n("size unavailable — needs root or “sudo docker”")
+                                    : Fmt.fmtBytes(logRow.sz)
+                                color: logRow.sz >= 1073741824 ? Kirigami.Theme.negativeTextColor
+                                     : logRow.sz >= 104857600 ? Kirigami.Theme.neutralTextColor
+                                     : Kirigami.Theme.textColor
+                            }
+                        }
+                        QQC2.Button {
+                            text: i18n("Truncate"); icon.name: "edit-clear-all"
+                            enabled: logRow.sz > 0
+                            onClicked: fullView.truncateContainerLog(modelData.id, modelData.name, logRow.sz)
+                            PlasmaComponents.ToolTip { text: i18n("Empty this log file (truncate -s 0)") }
+                        }
+                    }
+                }
+            }
+            PlasmaComponents.Label {
+                visible: fullView.diskLogs.length === 0
+                Layout.fillWidth: true
+                Layout.fillHeight: fullView.diskLogs.length === 0
+                horizontalAlignment: Text.AlignHCenter
+                verticalAlignment: Text.AlignVCenter
+                opacity: 0.5
+                text: i18n("No container logs")
+            }
 
             PlasmaComponents.Label {
                 Layout.fillWidth: true

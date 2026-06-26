@@ -236,6 +236,16 @@ Item {
             try { cb(JSON.parse(out.trim())); } catch (e) { cb({ ok: false, reason: "parse_error" }); }
         });
     }
+    function containerLogs(cb) {
+        engine.run(helperCmd("container-logs"), function (out) {
+            try { cb(JSON.parse(out.trim())); } catch (e) { cb({ ok: false, reason: "parse_error" }); }
+        });
+    }
+    function truncateLog(id, cb) {
+        engine.run(helperCmd("truncate-log", shq(id)), function (out) {
+            try { cb(JSON.parse(out.trim())); } catch (e) { cb({ ok: false, reason: "parse_error" }); }
+        });
+    }
     function doAction(act, id) {
         engine.run(helperCmd("action", act + " " + shq(id)), function () { refresh(); });
     }

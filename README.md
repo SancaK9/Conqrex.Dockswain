@@ -135,7 +135,11 @@ add the widget the usual way: right-click the panel or desktop → Add Widgets �
   size and how much is reclaimable. One-click safe cleanups, each confirmed first:
   prune build cache, dangling images, and stopped containers. Volumes are listed but
   never pruned, which keeps your database data safe; tagged images and `-a`/`--volumes`
-  are deliberately left out.
+  are deliberately left out. Below that, every container's JSON log file is listed by
+  size, biggest first, with a running total — so the one log quietly eating 30 GB is
+  the first thing you see — and a Truncate button empties it to zero after a confirm
+  that tells you how much you're discarding. Reading and truncating those root-owned
+  files needs the SSH user to be root, or the docker command set to `sudo docker`.
 - **Nginx** (the globe button): browse `/etc/nginx`. View or edit `nginx.conf` and
   each site (`sites-available`/`conf.d`), enable/disable sites, run `nginx -t`, and
   reload. Editing opens the file in your editor over the existing SSH connection, so

@@ -44,6 +44,12 @@ if [ -z "$RT" ]; then
     chmod 700 "$RT" 2>/dev/null      # tighten if it pre-existed (ours) with looser perms
 fi
 DOCKER="${CNQ_DOCKER_CMD:-docker}"
+# When docker is driven through sudo, mirror that for the plain filesystem reads/writes
+# on container log files (root-owned under the docker data root). sudo -n never prompts,
+# so a missing NOPASSWD rule fails fast instead of hanging (BatchMode philosophy). With a
+# bare `docker` we run unprivileged: works when the SSH user is root, else sizes show as
+# unreadable and truncate reports a permission error.
+case "$DOCKER" in "sudo "*|sudo) SUDO="sudo -n" ;; *) SUDO="" ;; esac
 NGINX_DIR="${CNQ_NGINX_DIR:-/etc/nginx}"
 
 # escape a value so it can be embedded inside single quotes in a remote script: each
@@ -492,6 +498,68 @@ prune)
         msg=$(printf '%s' "$SSH_ERR" | tr -d '\r\n"' | head -c 160)
         printf '{"ok":false,"reason":"%s"}\n' "${msg:-prune_failed}"
     fi
+    ;;
+
+# container-logs: size of every container's json log file, mapped back to its name —
+# the `du .../containers/*/*-json.log` the user runs by hand, but readable from the
+# widget so a runaway log (e.g. a 30 GB one) is easy to spot and truncate. The path
+# comes from `docker inspect .LogPath` (handles a custom data root / non-default
+# driver). Reading those root-owned files needs privilege, so we reuse $SUDO. Per
+# container, size is: a byte count, -1 if it exists but we can't stat it (no root/
+# sudo), or -2 if there is no json-file log at all (a different logging driver).
+container-logs)
+    remote=$(cat <<REMOTE
+ids=\$($DOCKER ps -aq --no-trunc 2>/dev/null)
+[ -n "\$ids" ] || exit 0
+$DOCKER inspect --format '{{.Id}} {{.Name}} {{.LogPath}}' \$ids 2>/dev/null \
+  | while read -r id name lp; do
+      sz=-1
+      if [ -z "\$lp" ]; then sz=-2
+      elif s=\$($SUDO stat -c %s "\$lp" 2>/dev/null); then sz=\$s
+      fi
+      printf '%s %s %s %s\n' "\$id" "\$name" "\$sz" "\$lp"
+    done
+REMOTE
+)
+    ssh_exec "$remote"
+    if [ "$SSH_RC" -ne 0 ] && [ -z "$SSH_OUT" ]; then emit_err "$(classify)"; fi
+    # fields are space-separated and never contain spaces (hex id, docker name, int,
+    # /var/lib/docker/.../-json.log). Sort readable sizes desc, then unreadable, then
+    # no-log; total counts only readable bytes.
+    logs=$(printf '%s\n' "$SSH_OUT" | jq -R -s -c '
+        split("\n") | map(select(length>0)) | map(split(" ")) |
+        map({ id:(.[0] // ""), name:((.[1] // "") | ltrimstr("/")),
+              size:((.[2] // "0") | tonumber? // 0), path:(.[3] // "") }) |
+        sort_by( if .size >= 0 then -(.size) else 1000000000000000 - .size end )' 2>/dev/null)
+    [ -n "$logs" ] || logs="[]"
+    total=$(printf '%s' "$logs" | jq -c '[ .[] | select(.size >= 0) | .size ] | add // 0' 2>/dev/null)
+    [ -n "$total" ] || total=0
+    printf '{"ok":true,"logs":%s,"total":%s}\n' "$logs" "$total"
+    ;;
+
+# truncate-log: empty one container's json log file (truncate -s 0). The path is taken
+# from `docker inspect` (never built from the id) and must end in -json.log, so this can
+# only ever zero a docker json-file log — not an arbitrary file. id is validated as hex.
+truncate-log)
+    ID="${1:-}"
+    [ -n "$ID" ] || emit_err "no_id"
+    [[ "$ID" =~ ^[0-9a-fA-F]{12,64}$ ]] || emit_err "bad_id"
+    IDe=$(rsq "$ID")
+    remote=$(cat <<REMOTE
+lp=\$($DOCKER inspect --format '{{.LogPath}}' '$IDe' 2>/dev/null)
+[ -n "\$lp" ] || { echo NOLOG; exit 0; }
+case "\$lp" in *-json.log) ;; *) echo BADPATH; exit 0 ;; esac
+if $SUDO truncate -s 0 "\$lp" 2>/dev/null; then echo OK; else echo FAIL; fi
+REMOTE
+)
+    ssh_exec "$remote"
+    if [ "$SSH_RC" -ne 0 ] && [ -z "$SSH_OUT" ]; then emit_err "$(classify)"; fi
+    case "$(printf '%s' "$SSH_OUT" | tr -d '\r\n ')" in
+        OK)      printf '{"ok":true}\n' ;;
+        NOLOG)   emit_err "no_log" ;;
+        BADPATH) emit_err "bad_path" ;;
+        *)       emit_err "truncate_failed" ;;
+    esac
     ;;
 
 action)
