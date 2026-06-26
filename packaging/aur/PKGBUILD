@@ -1,0 +1,26 @@
+# Maintainer: Serhan Aydinicen <saydinicen9@gmail.com>
+
+pkgname=plasma6-applets-dockswain
+_id=com.conqrex.dockswain
+pkgver=0.7.3
+pkgrel=1
+pkgdesc='KDE Plasma 6 widget to manage Docker on a remote host over SSH (containers, logs, compose, SFTP, nginx)'
+arch=('any')
+url='https://github.com/SancaK9/Conqrex.Dockswain'
+license=('MIT')
+depends=('plasma-workspace' 'jq' 'openssh')
+optdepends=('sshpass: password (non-key) SSH authentication'
+            'libsecret: keep passwords in the keyring (secret-tool)'
+            'rsync: faster file transfers with live progress'
+            'python3: import servers from FileZilla'
+            'konsole: open shells and exec into containers'
+            'kate: edit remote files (nginx, compose) over SSH')
+source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('SKIP')   # run `updpkgsums` to pin the real checksum before publishing
+
+package() {
+    install -dm755 "$pkgdir/usr/share/plasma/plasmoids/$_id"
+    # the extracted tarball has one top dir; copy the plasmoid payload into place
+    cp -a "$srcdir"/*/package/. "$pkgdir/usr/share/plasma/plasmoids/$_id/"
+    install -Dm644 "$srcdir"/*/LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

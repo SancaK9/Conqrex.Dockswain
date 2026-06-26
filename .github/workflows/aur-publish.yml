@@ -1,0 +1,52 @@
+name: Publish to AUR
+
+# Fires when you push a version tag (v0.7.3, v0.8.0, ...). Can also be run by hand
+# from the Actions tab against an existing tag.
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to publish, e.g. v0.7.3'
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  aur:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Pin version + checksum from the tag
+        id: prep
+        run: |
+          set -euo pipefail
+          tag="${{ github.event.inputs.tag || github.ref_name }}"
+          ver="${tag#v}"
+          url="https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/${tag}.tar.gz"
+          echo "Hashing release tarball: $url"
+          sum=$(curl -fsSL "$url" | sha256sum | cut -d' ' -f1)
+          cd packaging/aur
+          sed -i "s/^pkgver=.*/pkgver=${ver}/"             PKGBUILD
+          sed -i "s/^pkgrel=.*/pkgrel=1/"                  PKGBUILD
+          sed -i "s|^sha256sums=.*|sha256sums=('${sum}')|" PKGBUILD
+          echo "ver=${ver}" >> "$GITHUB_OUTPUT"
+          echo "----- PKGBUILD to be published -----"
+          cat PKGBUILD
+
+      - name: Publish to the AUR
+        uses: KSXGitHub/github-actions-deploy-aur@v2.7.2
+        with:
+          pkgname: plasma6-applets-dockswain
+          pkgbuild: ./packaging/aur/PKGBUILD
+          commit_username: Serhan Aydinicen
+          commit_email: saydinicen9@gmail.com
+          ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+          commit_message: "Update to ${{ steps.prep.outputs.ver }}"
+          ssh_keyscan_types: rsa,ecdsa,ed25519
+          # flip to true to also test-build in a clean chroot (slower: pulls plasma deps)
+          test: false

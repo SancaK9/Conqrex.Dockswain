@@ -1,0 +1,19 @@
+{
+    "KPlugin": {
+        "Id": "com.conqrex.dockswain",
+        "Name": "Dockswain",
+        "Description": "Manage Docker on a remote server over SSH: live container list, start/stop/restart, logs, exec, and compose up/down. Plus an SFTP file manager (dual-pane, drag-drop, sync) and nginx site creation with certbot SSL.",
+        "Icon": "network-server",
+        "Category": "System Information",
+        "License": "MIT",
+        "Version": "0.7.3",
+        "Authors": [
+            {
+                "Name": "Serhan Aydinicen",
+                "Email": "saydinicen9@gmail.com"
+            }
+        ]
+    },
+    "KPackageStructure": "Plasma/Applet",
+    "X-Plasma-API-Minimum-Version": "6.0"
+}

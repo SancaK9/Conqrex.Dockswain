@@ -1,0 +1,125 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<kcfg xmlns="http://www.kde.org/standards/kcfg/1.0"
+      xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+      xsi:schemaLocation="http://www.kde.org/standards/kcfg/1.0
+      http://www.kde.org/standards/kcfg/1.0/kcfg.xsd">
+    <kcfgfile name=""/>
+    <group name="General">
+        <entry name="serversJson" type="String">
+            <label>JSON array of servers: [{label,user,host,port,key}]</label>
+            <default>[]</default>
+        </entry>
+        <entry name="activeServer" type="Int">
+            <label>Index of the active server</label>
+            <default>0</default>
+        </entry>
+        <entry name="openTabsJson" type="String">
+            <label>JSON array of open server tabs (server indices)</label>
+            <default>[]</default>
+        </entry>
+        <entry name="pollInterval" type="Int">
+            <label>Container list refresh interval (seconds)</label>
+            <default>10</default>
+            <min>5</min>
+        </entry>
+        <entry name="statsInterval" type="Int">
+            <label>Stats refresh interval (seconds)</label>
+            <default>30</default>
+            <min>15</min>
+        </entry>
+        <entry name="showStats" type="Bool">
+            <label>Fetch and show CPU/memory stats</label>
+            <default>false</default>
+        </entry>
+        <entry name="showCompose" type="Bool">
+            <label>Show docker compose projects</label>
+            <default>true</default>
+        </entry>
+        <entry name="dockerCmd" type="String">
+            <label>Docker command on the remote (docker or sudo docker)</label>
+            <default>docker</default>
+        </entry>
+        <entry name="terminal" type="String">
+            <label>Terminal emulator for shell/exec</label>
+            <default>konsole</default>
+        </entry>
+        <entry name="confirmDestructive" type="Bool">
+            <label>Confirm destructive actions (remove, compose down)</label>
+            <default>true</default>
+        </entry>
+        <entry name="sshConnectTimeout" type="Int">
+            <label>SSH connect timeout (seconds)</label>
+            <default>5</default>
+        </entry>
+        <entry name="timeFormat24h" type="Bool">
+            <label>Use 24-hour time</label>
+            <default>true</default>
+        </entry>
+        <entry name="hideExitedDefault" type="Bool">
+            <label>Hide exited containers by default</label>
+            <default>true</default>
+        </entry>
+        <entry name="groupByNetwork" type="Bool">
+            <label>Group containers by their docker network</label>
+            <default>false</default>
+        </entry>
+        <entry name="favNetworks" type="String">
+            <label>Comma-separated list of favorited (pinned-to-top) networks</label>
+            <default></default>
+        </entry>
+        <entry name="favContainers" type="String">
+            <label>Comma-separated list of favorited (pinned-to-top) container names</label>
+            <default></default>
+        </entry>
+        <entry name="logTail" type="Int">
+            <label>Number of log lines to show</label>
+            <default>500</default>
+        </entry>
+        <entry name="logFollowInterval" type="Int">
+            <label>Log auto-follow refresh interval (seconds)</label>
+            <default>2</default>
+        </entry>
+        <entry name="nginxDir" type="String">
+            <label>nginx config directory on the server</label>
+            <default>/etc/nginx</default>
+        </entry>
+        <entry name="editor" type="String">
+            <label>Editor command for remote files</label>
+            <default>kate</default>
+        </entry>
+        <entry name="favPathsJson" type="String">
+            <label>JSON of favorite paths: { "local":[...], "remote:host:port":[...] }</label>
+            <default>{}</default>
+        </entry>
+        <entry name="defaultLocalDir" type="String">
+            <label>Local directory the file manager opens at (empty = home)</label>
+            <default></default>
+        </entry>
+        <entry name="fmPopupWidth" type="Int">
+            <label>File-manager popup width (grid units)</label>
+            <default>44</default>
+            <min>24</min>
+        </entry>
+        <entry name="fmPopupHeight" type="Int">
+            <label>File-manager popup height (grid units)</label>
+            <default>32</default>
+            <min>20</min>
+        </entry>
+        <entry name="syncDefaultFilter" type="String">
+            <label>Default file-manager compare filter: all|new|size|newer</label>
+            <default>all</default>
+        </entry>
+        <entry name="confirmDelete" type="Bool">
+            <label>Confirm file deletes in the file manager</label>
+            <default>true</default>
+        </entry>
+        <entry name="showHiddenFiles" type="Bool">
+            <label>Show dotfiles in the file manager</label>
+            <default>false</default>
+        </entry>
+        <entry name="sftpTool" type="String">
+            <label>Transfer tool: auto|rsync|scp</label>
+            <default>auto</default>
+        </entry>
+    </group>
+</kcfg>

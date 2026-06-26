@@ -1,0 +1,8 @@
+/.claude
+
+# CI build output for the pacman repo (built fresh, never committed)
+/public/
+packaging/aur/*.pkg.tar.zst
+packaging/aur/*.tar.gz
+packaging/aur/src/
+packaging/aur/pkg/
