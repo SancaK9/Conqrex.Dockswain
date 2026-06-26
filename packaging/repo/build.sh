@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build the package and assemble a pacman repo under <repo-root>/public/x86_64/.
+# Build the package and assemble a pacman repo under <repo-root>/repo/.
 # Meant to run inside an archlinux container in CI, but works locally on an Arch
 # box too (skip the pacman line if you already have base-devel). Needs $TAG
 # (e.g. v0.7.3) and $GITHUB_REPOSITORY (owner/name).
@@ -31,16 +31,22 @@ else
     makepkg -f --nodeps
 fi
 
-repo_dir="$root/public/x86_64"
-mkdir -p "$repo_dir"
-cp ./*.pkg.tar.zst "$repo_dir/"
+# A pacman repo db holds exactly one entry per package name, so this repo is
+# latest-only by nature: every run rebuilds a fresh db pointing at the tag that
+# triggered it. (Older .pkg files left on the release are harmless, just unused.)
+out="$root/repo"
+rm -rf "$out"; mkdir -p "$out"
+built=$(ls -t ./*.pkg.tar.zst | head -1)   # the package makepkg just produced
+cp "$built" "$out/"
 
-cd "$repo_dir"
-repo-add dockswain.db.tar.zst ./*.pkg.tar.zst
-# GitHub Pages won't serve the symlinks repo-add creates, so ship real files under
-# the names pacman actually fetches (<repo>.db and <repo>.files).
-cp -f --remove-destination dockswain.db.tar.zst   dockswain.db
+cd "$out"
+# add only that one package by name — a glob over several versions would feed them
+# in lexical order and could advertise an older build as current
+repo-add dockswain.db.tar.zst "$(basename "$built")"
+# A GitHub release can't serve the symlinks repo-add creates, so ship real files
+# under the names pacman actually fetches (<repo>.db and <repo>.files).
+cp -f --remove-destination dockswain.db.tar.zst    dockswain.db
 cp -f --remove-destination dockswain.files.tar.zst dockswain.files
 
-echo "Built repo at $repo_dir:"
-ls -l "$repo_dir"
+echo "Repo contents ($out):"
+ls -l "$out"

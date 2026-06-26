@@ -1,7 +1,13 @@
-name: Pacman repo (GitHub Pages)
+name: Pacman repo (GitHub Release)
 
-# Builds the binary package on each version tag and publishes a pacman repository
-# to GitHub Pages, so users can install with plain `pacman -S`.
+# On each version tag, build the binary package and publish a pacman repository as
+# a fixed 'arch-repo' release, so users install with plain pacman:
+#
+#   /etc/pacman.conf:
+#     [dockswain]
+#     SigLevel = Optional TrustAll
+#     Server = https://github.com/<owner>/<repo>/releases/download/arch-repo
+#   then: sudo pacman -Syu dockswain
 on:
   push:
     tags:
@@ -9,21 +15,18 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Existing tag to (re)publish, e.g. v0.7.3'
+        description: 'Existing tag to build, e.g. v0.7.3'
         required: true
 
 permissions:
-  contents: read
-  pages: write
-  id-token: write
+  contents: write          # create/update the arch-repo release
 
-# don't let two publishes race on the Pages deployment
 concurrency:
-  group: pacman-repo-pages
+  group: pacman-repo
   cancel-in-progress: false
 
 jobs:
-  build:
+  publish:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -36,16 +39,25 @@ jobs:
             -e TAG -e GITHUB_REPOSITORY="$GITHUB_REPOSITORY" \
             archlinux:latest bash /work/packaging/repo/build.sh
 
-      - uses: actions/upload-pages-artifact@v3
-        with:
-          path: public
+      - name: Publish to the fixed 'arch-repo' release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cd repo
+          gh release view arch-repo >/dev/null 2>&1 || \
+            gh release create arch-repo --title "Arch / pacman repository" --latest=false \
+              --notes "pacman repository for CachyOS / Arch.
 
-  deploy:
-    needs: build
-    runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deploy.outputs.page_url }}
-    steps:
-      - id: deploy
-        uses: actions/deploy-pages@v4
+          Add to /etc/pacman.conf:
+
+          [dockswain]
+          SigLevel = Optional TrustAll
+          Server = https://github.com/${GITHUB_REPOSITORY}/releases/download/arch-repo
+
+          Then: sudo pacman -Syu dockswain"
+          # pacman fetches <repo>.db / <repo>.files (real files); the .tar.zst pair is
+          # kept so the next run can extend the db instead of rebuilding it.
+          gh release upload arch-repo --clobber \
+            dockswain.db dockswain.db.tar.zst \
+            dockswain.files dockswain.files.tar.zst \
+            ./*.pkg.tar.zst

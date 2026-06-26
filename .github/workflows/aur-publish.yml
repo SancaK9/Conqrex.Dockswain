@@ -1,7 +1,8 @@
 name: Publish to AUR
 
-# Fires when you push a version tag (v0.7.3, v0.8.0, ...). Can also be run by hand
-# from the Actions tab against an existing tag.
+# Fires on a version tag (v0.7.3, v0.8.0, ...) or by hand from the Actions tab.
+# No-ops cleanly until the AUR_SSH_PRIVATE_KEY secret is set, so it won't show a
+# red failure while you're still waiting on an AUR account.
 on:
   push:
     tags:
@@ -19,10 +20,24 @@ jobs:
   aur:
     runs-on: ubuntu-latest
     steps:
+      - name: Is the AUR key configured?
+        id: gate
+        env:
+          KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+        run: |
+          if [ -z "$KEY" ]; then
+            echo "AUR_SSH_PRIVATE_KEY not set — skipping AUR publish."
+            echo "go=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "go=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - uses: actions/checkout@v4
+        if: steps.gate.outputs.go == 'true'
 
       - name: Pin version + checksum from the tag
         id: prep
+        if: steps.gate.outputs.go == 'true'
         run: |
           set -euo pipefail
           tag="${{ github.event.inputs.tag || github.ref_name }}"
@@ -39,9 +54,10 @@ jobs:
           cat PKGBUILD
 
       - name: Publish to the AUR
+        if: steps.gate.outputs.go == 'true'
         uses: KSXGitHub/github-actions-deploy-aur@v2.7.2
         with:
-          pkgname: plasma6-applets-dockswain
+          pkgname: dockswain
           pkgbuild: ./packaging/aur/PKGBUILD
           commit_username: Serhan Aydinicen
           commit_email: saydinicen9@gmail.com

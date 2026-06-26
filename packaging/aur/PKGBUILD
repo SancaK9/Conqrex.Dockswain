@@ -1,6 +1,6 @@
 # Maintainer: Serhan Aydinicen <saydinicen9@gmail.com>
 
-pkgname=plasma6-applets-dockswain
+pkgname=dockswain
 _id=com.conqrex.dockswain
 pkgver=0.7.3
 pkgrel=1
@@ -16,7 +16,7 @@ optdepends=('sshpass: password (non-key) SSH authentication'
             'konsole: open shells and exec into containers'
             'kate: edit remote files (nginx, compose) over SSH')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
-sha256sums=('SKIP')   # run `updpkgsums` to pin the real checksum before publishing
+sha256sums=('4805e5f557a50c40ff76eb1f1d700a7e99b2f910d11436e4c65f4a82d38a196e')
 
 package() {
     install -dm755 "$pkgdir/usr/share/plasma/plasmoids/$_id"
