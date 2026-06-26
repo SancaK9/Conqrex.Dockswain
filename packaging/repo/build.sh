@@ -26,9 +26,9 @@ sed -i "s|^sha256sums=.*|sha256sums=('${sum}')|" PKGBUILD
 if [ "$(id -u)" = 0 ]; then
     useradd -m builder 2>/dev/null || true
     chown -R builder "$root/packaging/aur"
-    sudo -u builder makepkg -f
+    sudo -u builder makepkg -f --nodeps
 else
-    makepkg -f
+    makepkg -f --nodeps
 fi
 
 repo_dir="$root/public/x86_64"
