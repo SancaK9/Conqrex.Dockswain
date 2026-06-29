@@ -65,13 +65,13 @@ struct FileEntry: Identifiable, Decodable, Equatable {
 // MARK: - Nginx
 
 struct NginxSite: Identifiable, Decodable, Equatable {
-    let dir: String       // sites-available | conf.d
-    let path: String
+    let name: String      // file/site name (used for enable/disable)
+    let path: String      // full path on the server (for view/edit)
     let enabled: Bool
     let tls: Bool
     let serverName: String
     var id: String { path }
-    var fileName: String { (path as NSString).lastPathComponent }
+    var fileName: String { name }
 }
 
 // MARK: - Certbot

@@ -478,49 +478,94 @@ else rm -- "$p"; fi'
 # ---------------------------------------------------------------------------
 # nginx: browse /etc/nginx, view/edit sites, enable/disable, test, reload.
 # ---------------------------------------------------------------------------
+# nginx-list: ported 1:1 from the Linux build's nginx-info. Detects the layout
+# (sites-available + sites-enabled symlinks, vs conf.d/*.conf with a .disabled twin),
+# collects every server_name token (dropping the catch-all '_' and dupes), and flags
+# TLS. Emits base + style + one row per vhost.
 nginx-list)
+    SU="${SUDO:+$SUDO }"
     IFS= read -r -d '' remote <<REMOTE || true
-nd="$NGINX_DIR"
-${SUDO:+$SUDO }test -d "\$nd" || { echo "@@NODIR@@"; exit 0; }
-echo "@@CONF@@"
-for d in sites-available conf.d; do
-  ${SUDO:+$SUDO }test -d "\$nd/\$d" || continue
-  for f in "\$nd/\$d"/*; do
-    ${SUDO:+$SUDO }test -f "\$f" || continue
-    en=0
-    bn=\$(basename "\$f")
-    if [ "\$d" = conf.d ]; then en=1
-    elif ${SUDO:+$SUDO }test -L "\$nd/sites-enabled/\$bn" || ${SUDO:+$SUDO }test -e "\$nd/sites-enabled/\$bn"; then en=1; fi
-    sn=\$(${SUDO:+$SUDO }grep -hoE 'server_name[[:space:]]+[^;]+' "\$f" 2>/dev/null | head -1 | sed 's/server_name//;s/^[[:space:]]*//')
-    tls=0; ${SUDO:+$SUDO }grep -qE 'ssl_certificate|listen[[:space:]]+443' "\$f" 2>/dev/null && tls=1
-    printf '%s\t%s\t%s\t%s\t%s\n' "\$d" "\$f" "\$en" "\$tls" "\$sn"
+base="$NGINX_DIR"
+conf="\$base/nginx.conf"
+${SU}test -d "\$base" || { echo "@@NODIR@@"; exit 0; }
+style=confd
+if ${SU}test -f "\$conf" && ${SU}grep -qE 'sites-enabled' "\$conf" 2>/dev/null; then style=sites
+elif ${SU}test -d "\$base/sites-available"; then style=sites; fi
+printf 'style=%s\n' "\$style"
+printf 'conf=%s\n' "\$(${SU}test -f "\$conf" && echo 1 || echo 0)"
+meta() {
+  sn=\$(${SU}sed 's/#.*//' "\$1" 2>/dev/null \
+        | awk 'tolower(\$1)=="server_name"{for(i=2;i<=NF;i++){t=\$i; sub(/;.*/,"",t); if(t!=""&&t!="_"&&!seen[t]++){printf "%s%s",(n++?" ":""),t}}}')
+  s=0; ${SU}sed 's/#.*//' "\$1" 2>/dev/null \
+        | grep -aiqE '(^|[[:space:]])ssl_certificate([[:space:]]|;)|listen[^;]*[[:space:]]ssl([[:space:]]|;|\$)' && s=1
+  printf '%s\t%s' "\$s" "\$sn"
+}
+if [ "\$style" = sites ]; then
+  for f in "\$base"/sites-available/*; do
+    ${SU}test -e "\$f" || continue
+    n=\$(basename "\$f")
+    if ${SU}test -e "\$base/sites-enabled/\$n"; then en=1; else en=0; fi
+    printf 'site\t%s\t%s\t%s\t' "\$n" "\$f" "\$en"; meta "\$f"; printf '\n'
   done
-done
+else
+  for f in "\$base"/conf.d/*.conf "\$base"/conf.d/*.conf.disabled; do
+    ${SU}test -e "\$f" || continue
+    b=\$(basename "\$f")
+    case "\$b" in
+      *.conf.disabled) n="\${b%.disabled}"; ${SU}test -e "\$base/conf.d/\$n" && continue; en=0;;
+      *.conf)          n="\$b"; en=1;;
+      *) continue;;
+    esac
+    printf 'site\t%s\t%s\t%s\t' "\$n" "\$f" "\$en"; meta "\$f"; printf '\n'
+  done
+fi
 REMOTE
     ssh_exec "$remote"
     if [ "$SSH_RC" -ne 0 ] && [ -z "$SSH_OUT" ]; then emit_err "$(classify)"; fi
     if printf '%s' "$SSH_OUT" | grep -q '@@NODIR@@'; then emit_err "no_nginx_dir"; fi
-    sites=$(printf '%s\n' "$SSH_OUT" | awk 'f' RS='@@CONF@@\n' | jq -Rsc '
-        split("\n") | map(select(length>0)) | map(split("\t")) |
-        map({dir:.[0], path:.[1], enabled:(.[2]=="1"), tls:(.[3]=="1"), serverName:(.[4]//"")})' 2>/dev/null)
+    style=$(printf '%s\n' "$SSH_OUT" | sed -n 's/^style=//p' | head -1)
+    sites=$(printf '%s\n' "$SSH_OUT" | awk -F'\t' '$1=="site"{printf "%s\t%s\t%s\t%s\t%s\n",$2,$3,$4,$5,$6}' \
+        | jq -Rsc 'split("\n")|map(select(length>0))|map(split("\t"))|
+            map({name:.[0], path:.[1], enabled:(.[2]=="1"), tls:(.[4]=="1"), serverName:(.[5]//"")})' 2>/dev/null)
     [ -n "$sites" ] || sites="[]"
-    printf '{"ok":true,"dir":%s,"sites":%s}\n' "$(jstr "$NGINX_DIR")" "$sites"
+    printf '{"ok":true,"dir":%s,"style":"%s","sites":%s}\n' "$(jstr "$NGINX_DIR")" "${style:-confd}" "$sites"
     ;;
 
+# nginx-toggle: ported from nginx-site. Handles both layouts — sites-enabled symlink,
+# or conf.d/*.conf <-> *.conf.disabled (never overwriting the opposite twin).
 nginx-toggle)
     ACT="${1:-}"; BN="${2:-}"
     case "$ACT" in enable|disable) ;; *) emit_err "bad_action";; esac
     [ -n "$BN" ] || emit_err "no_name"
     case "$BN" in */*|..) emit_err "bad_name";; esac
-    besc=$(rsq "$BN"); nd=$(rsq "$NGINX_DIR")
-    if [ "$ACT" = enable ]; then
-        ssh_exec "${SUDO:+$SUDO }ln -sf '$nd/sites-available/$besc' '$nd/sites-enabled/$besc' 2>&1 && echo OK"
-    else
-        ssh_exec "${SUDO:+$SUDO }rm -f '$nd/sites-enabled/$besc' 2>&1 && echo OK"
-    fi
-    if [ "$SSH_RC" -eq 0 ] && printf '%s' "$SSH_OUT" | grep -q OK; then printf '{"ok":true}\n'
-    elif echo "$SSH_ERR" | grep -qi 'permission denied'; then emit_err "permission"
-    else emit_err "toggle_failed"; fi
+    SU="${SUDO:+$SUDO }"; N=$(rsq "$BN")
+    IFS= read -r -d '' remote <<REMOTE || true
+base="$NGINX_DIR"; name='$N'; act='$ACT'
+name=\$(basename "\$name")
+conf="\$base/nginx.conf"
+style=confd
+if ${SU}test -f "\$conf" && ${SU}grep -qE 'sites-enabled' "\$conf" 2>/dev/null; then style=sites
+elif ${SU}test -d "\$base/sites-available"; then style=sites; fi
+if [ "\$style" = sites ]; then
+  if [ "\$act" = enable ]; then ${SU}ln -sf "../sites-available/\$name" "\$base/sites-enabled/\$name"
+  else ${SU}rm -f "\$base/sites-enabled/\$name"; fi
+else
+  if [ "\$act" = enable ]; then
+    ${SU}test -e "\$base/conf.d/\$name" && { echo CONFLICT; exit 0; }
+    ${SU}test -f "\$base/conf.d/\$name.disabled" && ${SU}mv "\$base/conf.d/\$name.disabled" "\$base/conf.d/\$name"
+  else
+    ${SU}test -e "\$base/conf.d/\$name.disabled" && { echo CONFLICT; exit 0; }
+    ${SU}test -f "\$base/conf.d/\$name" && ${SU}mv "\$base/conf.d/\$name" "\$base/conf.d/\$name.disabled"
+  fi
+fi
+echo OK
+REMOTE
+    ssh_exec "$remote"
+    case "$(printf '%s' "$SSH_OUT" | tr -d '\r\n ')" in
+        *OK)       printf '{"ok":true}\n' ;;
+        *CONFLICT) emit_err "conflict" ;;
+        *) if echo "$SSH_ERR" | grep -qi 'permission denied'; then emit_err "permission"; else emit_err "toggle_failed"; fi ;;
+    esac
     ;;
 
 # nginx-new: write a new server block (built in Swift, passed as base64) to the

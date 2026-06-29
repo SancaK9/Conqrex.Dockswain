@@ -76,9 +76,7 @@ struct NginxView: View {
                 }
             }
             Spacer()
-            if s.dir == "sites-available" {
-                Button(s.enabled ? "disable" : "enable") { toggle(s) }.controlSize(.small)
-            }
+            Button(s.enabled ? "disable" : "enable") { toggle(s) }.controlSize(.small)
             Button { Task { await openEditor(s) } } label: { Image(systemName: "pencil") }
                 .buttonStyle(.borderless).help("View / edit")
         }
