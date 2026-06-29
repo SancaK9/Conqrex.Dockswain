@@ -221,6 +221,23 @@ add the widget the usual way: right-click the panel or desktop → Add Widgets �
   manager options: starting local directory, transfer tool (`auto`/`rsync`/`scp`),
   popup size, confirm-delete, and show-hidden-files.
 
+## Releasing
+
+Releases are automatic. Every push to `main` runs `.github/workflows/release.yml`, which
+bumps the version, commits it back, tags `vX.Y.Z`, and then builds the pacman package and
+publishes both the `arch-repo` pacman repository and the AUR package.
+
+- The bump is a **patch** by default; put `#minor` or `#major` in the push's head commit
+  message to bump those instead.
+- Add `[skip release]` to a commit message to push without cutting a release (handy for
+  docs or work-in-progress).
+- Because the workflow commits the version bump back to `main`, `git pull` before your
+  next push (the tag points at that bump commit, so the released sources carry the right
+  version). The AUR step quietly no-ops until `AUR_SSH_PRIVATE_KEY` is set.
+
+You can also trigger a release by hand from the Actions tab (“Auto release on push” →
+Run workflow → pick patch/minor/major).
+
 ## Security & notes
 
 - When a password is used it lives only in your KWallet/keyring, never in a config file

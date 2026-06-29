@@ -12,6 +12,12 @@ on:
       tag:
         description: 'Existing tag to publish, e.g. v0.7.3'
         required: true
+  workflow_call:                 # invoked by release.yml after it creates the tag
+    inputs:
+      tag:
+        description: 'Tag to publish, e.g. v0.7.3'
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -38,9 +44,11 @@ jobs:
       - name: Pin version + checksum from the tag
         id: prep
         if: steps.gate.outputs.go == 'true'
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}    # via env, never inlined into the script
         run: |
           set -euo pipefail
-          tag="${{ github.event.inputs.tag || github.ref_name }}"
+          tag="$TAG"
           ver="${tag#v}"
           url="https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/${tag}.tar.gz"
           echo "Hashing release tarball: $url"

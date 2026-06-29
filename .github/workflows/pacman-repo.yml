@@ -17,6 +17,12 @@ on:
       tag:
         description: 'Existing tag to build, e.g. v0.7.3'
         required: true
+  workflow_call:                 # invoked by release.yml after it creates the tag
+    inputs:
+      tag:
+        description: 'Tag to build, e.g. v0.7.3'
+        required: true
+        type: string
 
 permissions:
   contents: write          # create/update the arch-repo release
@@ -33,7 +39,7 @@ jobs:
 
       - name: Build package + repo database (Arch container)
         env:
-          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+          TAG: ${{ inputs.tag || github.ref_name }}
         run: |
           docker run --rm -v "$PWD:/work" -w /work \
             -e TAG -e GITHUB_REPOSITORY="$GITHUB_REPOSITORY" \
