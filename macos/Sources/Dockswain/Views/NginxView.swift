@@ -19,9 +19,6 @@ struct NginxView: View {
         var id: String { path }
     }
 
-    enum Tab: String, CaseIterable { case sites = "Sites", confd = "conf.d" }
-    @State private var tab: Tab = .sites
-
     @State private var sites: [NginxSite] = []
     @State private var dir = "/etc/nginx"
     @State private var hasConf = false
@@ -33,26 +30,25 @@ struct NginxView: View {
     @State private var creating = false
     @State private var busy = false
 
-    // conf.d snippets (upstreams, maps, includes) — the second tab.
+    // conf.d snippets (upstreams, maps, includes) — shown inline below the sites.
     @State private var confd: [ConfdFile] = []
     @State private var confdDir = "/etc/nginx/conf.d"
     @State private var confdStatus = "Loading…"
-    @State private var confdLoaded = false
     @State private var creatingConfd = false
     @State private var newConfdName = ""
     @State private var pendingDelete: ConfdFile?
+
+    @State private var certs: [Cert] = []        // installed certbot certs (inline list)
 
     private var confPath: String { dir + "/nginx.conf" }
 
     var body: some View {
         VStack(spacing: 0) {
             FeatureHeader(title: "Nginx \(dir)", trailing: AnyView(HStack(spacing: 10) {
-                Button { startCreate() } label: { Image(systemName: "plus") }
-                    .buttonStyle(.borderless).help(tab == .sites ? "New website" : "New conf.d file")
-                Button { openCertbot("") } label: { Image(systemName: "lock.shield") }
-                    .buttonStyle(.borderless).help("SSL certificates (certbot)")
-                Button { Task { await reloadCurrent() } } label: { Image(systemName: "arrow.clockwise") }
-                    .buttonStyle(.borderless)
+                Button { creating = true } label: { Label("New site", systemImage: "plus") }
+                    .controlSize(.small).help("Create a new nginx website config")
+                Button { Task { await load() } } label: { Image(systemName: "arrow.clockwise") }
+                    .buttonStyle(.borderless).help("Reload list")
             }), onBack: onBack)
 
             if creating {
@@ -67,63 +63,90 @@ struct NginxView: View {
         .task { await load() }
     }
 
+    // Single scrolling page (the Linux layout): nginx.conf, Sites, conf.d, then the
+    // certificates list — with a Test / Reload bar pinned at the bottom.
     private var browser: some View {
         VStack(spacing: 0) {
+            ScrollView {
+                VStack(spacing: 6) {
+                    if hasConf { confRow }
+
+                    sectionHeader("Sites")
+                    if sites.isEmpty {
+                        Text(status).font(.caption).foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 6)
+                    } else {
+                        ForEach(sites) { siteRow($0) }
+                    }
+
+                    HStack {
+                        Text("conf.d").font(.caption2).foregroundStyle(.secondary)
+                        Spacer()
+                        Button { newConfdName = ""; creatingConfd = true } label: {
+                            Label("New file", systemImage: "plus")
+                        }.controlSize(.mini)
+                    }.padding(.top, 6)
+                    if confd.isEmpty {
+                        Text(confdStatus).font(.caption2).foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading).padding(.bottom, 4)
+                    } else {
+                        ForEach(confd) { confdRow($0) }
+                    }
+
+                    if !certs.isEmpty {
+                        sectionHeader("Certificates")
+                        ForEach(certs) { certRow($0) }
+                    }
+                }.padding(8)
+            }
+            .confirmationDialog("Delete \(pendingDelete?.name ?? "")?",
+                                isPresented: Binding(get: { pendingDelete != nil },
+                                                     set: { if !$0 { pendingDelete = nil } }),
+                                titleVisibility: .visible) {
+                Button("Delete", role: .destructive) { if let f = pendingDelete { delete(f) } }
+                Button("Cancel", role: .cancel) { pendingDelete = nil }
+            } message: {
+                if let f = pendingDelete { Text("Removes \(f.path) from the server. Run Test + Reload after.") }
+            }
+
+            if let t = testResult {
+                Divider()
+                Text(t.text).font(.caption2.monospaced())
+                    .foregroundStyle(t.pass ? .green : .red)
+                    .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 8).padding(.vertical, 4)
+            }
+            Divider()
             HStack {
-                Button { Task { await runTest() } } label: { Label("Test", systemImage: "checkmark.seal") }
+                Button { Task { await runTest() } } label: { Label("Test (nginx -t)", systemImage: "checkmark.seal") }
                     .controlSize(.small)
-                Button { Task { await reload() } } label: { Label("Reload", systemImage: "arrow.triangle.2.circlepath") }
+                Button { Task { await reload() } } label: { Label("Reload nginx", systemImage: "arrow.triangle.2.circlepath") }
                     .controlSize(.small)
                 Spacer()
                 if busy { ProgressView().controlSize(.small) }
-            }.padding(.horizontal, 8).padding(.top, 8)
-            Picker("", selection: $tab) {
-                ForEach(Tab.allCases, id: \.self) { Text($0.rawValue).tag($0) }
-            }.pickerStyle(.segmented).labelsHidden().padding(8)
-            .onChange(of: tab) { _ in if tab == .confd && !confdLoaded { Task { await loadConfd() } } }
-            if let t = testResult {
-                Text(t.text).font(.caption2.monospaced())
-                    .foregroundStyle(t.pass ? .green : .red)
-                    .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 8)
-            }
-            Divider()
-            if tab == .sites { sitesList } else { confdList }
-        }
-    }
-
-    private var sitesList: some View {
-        ScrollView {
-            VStack(spacing: 6) {
-                if hasConf { confRow }
-                if sites.isEmpty {
-                    Text(status).font(.caption).foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, alignment: .center).padding(.vertical, 24)
-                } else {
-                    HStack { Text("Sites").font(.caption2).foregroundStyle(.secondary); Spacer() }
-                    ForEach(sites) { siteRow($0) }
-                }
             }.padding(8)
         }
     }
 
-    private var confdList: some View {
-        Group {
-            if confd.isEmpty {
-                Text(confdStatus).font(.caption).foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                ScrollView { VStack(spacing: 6) { ForEach(confd) { confdRow($0) } }.padding(8) }
+    private func sectionHeader(_ title: String) -> some View {
+        HStack { Text(title).font(.caption2).foregroundStyle(.secondary); Spacer() }.padding(.top, 4)
+    }
+
+    // One certbot certificate: a green/red shield by validity, name, and expiry.
+    private func certRow(_ c: Cert) -> some View {
+        let ok = c.isValid
+        return VStack(alignment: .leading, spacing: 1) {
+            HStack(spacing: 6) {
+                Image(systemName: ok ? "checkmark.shield.fill" : "xmark.shield.fill")
+                    .font(.system(size: 10)).foregroundStyle(ok ? Color.green : Color.red)
+                Text(c.name).font(.system(size: 12, design: .monospaced)).lineLimit(1)
+                Spacer()
+                if !c.valid.isEmpty {
+                    Text(c.valid).font(.caption2).foregroundStyle(ok ? Color.secondary : Color.red)
+                }
             }
+            Text("expires \(c.expiry)").font(.caption2).foregroundStyle(.secondary).lineLimit(1)
         }
-        .confirmationDialog("Delete \(pendingDelete?.name ?? "")?",
-                            isPresented: Binding(get: { pendingDelete != nil },
-                                                 set: { if !$0 { pendingDelete = nil } }),
-                            titleVisibility: .visible) {
-            Button("Delete", role: .destructive) { if let f = pendingDelete { delete(f) } }
-            Button("Cancel", role: .cancel) { pendingDelete = nil }
-        } message: {
-            if let f = pendingDelete { Text("Removes \(f.path) from the server. Run Test + Reload after.") }
-        }
+        .padding(.horizontal, 8).padding(.vertical, 4)
     }
 
     private func confdRow(_ f: ConfdFile) -> some View {
@@ -277,28 +300,21 @@ struct NginxView: View {
 
     // MARK: - actions
 
-    private func startCreate() {
-        testResult = nil
-        if tab == .sites { creating = true } else { newConfdName = ""; creatingConfd = true }
-    }
-    private func reloadCurrent() async {
-        if tab == .sites { await load() } else { await loadConfd() }
-    }
-
     private func load() async {
         guard let srv = state.selectedServer else { status = "No server"; return }
         confdDir = "\(state.nginxDir)/conf.d"
-        do { let r = try await state.makeBackend().nginxSites(srv)
+        let backend = state.makeBackend()
+        do { let r = try await backend.nginxSites(srv)
              dir = r.dir; hasConf = r.hasConf; sites = r.sites
              confdDir = "\(dir)/conf.d"
              status = sites.isEmpty ? "No sites found in \(dir)." : "" }
         catch { status = error.localizedDescription; sites = []; hasConf = false }
-        if tab == .confd || confdLoaded { await loadConfd() }
+        await loadConfd()
+        certs = (try? await backend.certbotList(srv)) ?? []
     }
     private func loadConfd() async {
         guard let srv = state.selectedServer else { confdStatus = "No server"; return }
         do { let r = try await state.makeBackend().nginxConfd(srv); confdDir = r.dir; confd = r.files
-             confdLoaded = true
              confdStatus = confd.isEmpty ? "No files in \(confdDir)." : "" }
         catch { confdStatus = error.localizedDescription; confd = [] }
     }
@@ -349,7 +365,7 @@ struct NginxView: View {
         do {
             try await state.makeBackend().writeFile(t.path, content: fileText, on: srv)
             editing = nil
-            await reloadCurrent()
+            await load()
         } catch { testResult = (false, error.localizedDescription) }
     }
 }
