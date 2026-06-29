@@ -16,6 +16,24 @@ final class AppState: ObservableObject {
     @Published var refreshInterval: Double = max(2, UserDefaults.standard.double(forKey: "refreshInterval")) {
         didSet { UserDefaults.standard.set(refreshInterval, forKey: "refreshInterval"); restartPolling() }
     }
+    @Published var statsEnabled: Bool = UserDefaults.standard.bool(forKey: "statsEnabled") {
+        didSet { UserDefaults.standard.set(statsEnabled, forKey: "statsEnabled"); if !statsEnabled { statsByID = [:] } }
+    }
+    @Published var groupByNetwork: Bool = UserDefaults.standard.bool(forKey: "groupByNetwork") {
+        didSet { UserDefaults.standard.set(groupByNetwork, forKey: "groupByNetwork") }
+    }
+    @Published var nginxDir: String = UserDefaults.standard.string(forKey: "nginxDir") ?? "/etc/nginx" {
+        didSet { UserDefaults.standard.set(nginxDir, forKey: "nginxDir") }
+    }
+
+    // Filtering (session-only)
+    @Published var searchText: String = ""
+    @Published var runningOnly: Bool = false
+
+    // Pins (persisted, by container name)
+    @Published var pinned: Set<String> = Set(UserDefaults.standard.stringArray(forKey: "pinned") ?? []) {
+        didSet { UserDefaults.standard.set(Array(pinned), forKey: "pinned") }
+    }
 
     // Live state
     @Published var containers: [Container] = []
@@ -36,6 +54,52 @@ final class AppState: ObservableObject {
         guard selectedServer != nil, !containers.isEmpty else { return "" }
         let running = containers.filter(\.isRunning).count
         return "\(running)/\(containers.count)"
+    }
+
+    /// A configured Backend instance feature views can use directly.
+    func makeBackend() -> Backend {
+        var b = Backend()
+        b.options.dockerCmd = dockerCmd
+        b.options.nginxDir = nginxDir
+        return b
+    }
+
+    // MARK: - Filtering / grouping / pins
+
+    func isPinned(_ c: Container) -> Bool { pinned.contains(c.name) }
+
+    func togglePin(_ c: Container) {
+        if pinned.contains(c.name) { pinned.remove(c.name) } else { pinned.insert(c.name) }
+    }
+
+    /// Containers after search + running-only, sorted pinned → running → name.
+    var displayedContainers: [Container] {
+        let q = searchText.trimmingCharacters(in: .whitespaces).lowercased()
+        return containers.filter { c in
+            if runningOnly && !c.isRunning { return false }
+            if q.isEmpty { return true }
+            return c.name.lowercased().contains(q)
+                || c.image.lowercased().contains(q)
+                || c.state.lowercased().contains(q)
+        }.sorted { a, b in
+            let pa = isPinned(a), pb = isPinned(b)
+            if pa != pb { return pa }
+            if a.isRunning != b.isRunning { return a.isRunning }
+            return a.name.localizedCaseInsensitiveCompare(b.name) == .orderedAscending
+        }
+    }
+
+    var hiddenCount: Int { containers.count - displayedContainers.count }
+
+    /// (network, containers) groups, used when groupByNetwork is on.
+    var networkGroups: [(network: String, items: [Container])] {
+        let items = displayedContainers
+        var groups: [String: [Container]] = [:]
+        for c in items {
+            let net = c.networks.split(separator: ",").first.map(String.init) ?? "—"
+            groups[net.isEmpty ? "—" : net, default: []].append(c)
+        }
+        return groups.sorted { $0.key < $1.key }.map { ($0.key, $0.value) }
     }
 
     init() {
@@ -130,6 +194,13 @@ final class AppState: ObservableObject {
             statusMessage = ""
             if serverVersion.isEmpty {
                 serverVersion = (try? await backend.probe(server)) ?? ""
+            }
+            if statsEnabled {
+                if let stats = try? await backend.stats(server), server.id == selectedServerID {
+                    var map: [String: ContainerStat] = [:]
+                    for st in stats { map[String(st.id.prefix(12))] = st }
+                    statsByID = map
+                }
             }
         } catch {
             guard server.id == selectedServerID else { return }

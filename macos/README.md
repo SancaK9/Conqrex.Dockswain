@@ -1,7 +1,7 @@
 # Dockswain for macOS
 
 A **menu-bar app** for managing Docker on a remote server over SSH — the macOS
-counterpart of the Linux KDE Plasma widget at the [repository root](../README.md).
+counterpart of the Linux KDE Plasma widget in the [repository root](../README.md).
 Live container list with start/stop/restart/remove, auto-following logs, "exec a
 shell into a container", `docker compose` up/down, and a one-click "open an SSH
 terminal on the server" button. It lives in the menu bar with a running/total badge.
@@ -11,10 +11,10 @@ terminal on the server" button. It lives in the menu bar with a running/total ba
 The Linux version is a **KDE Plasma 6 plasmoid**: its entire UI is built on
 `org.kde.plasma.*` and `org.kde.kirigami`, hosted by `plasmashell` and installed
 with `kpackagetool6`. None of that exists on macOS, so the widget can't be "moved"
-by reorganizing folders — the UI had to be rewritten natively in **SwiftUI**
-(`MenuBarExtra`). What carries over is the proven backend approach: a small bash
-helper that runs docker over a multiplexed SSH connection and prints normalized
-output the app parses.
+by reorganizing folders — the UI had to be rewritten natively in **SwiftUI** (a
+draggable, edge-dockable menu-bar panel). What carries over is the proven backend
+approach: a small bash helper that runs docker over a multiplexed SSH connection and
+prints normalized output the app parses.
 
 The helper, [`Sources/Dockswain/Backend/dockswain-mac.sh`](Sources/Dockswain/Backend/dockswain-mac.sh),
 is the macOS port of the Linux `dockswain.sh`, with the Linux-only bits swapped out:
@@ -23,7 +23,7 @@ is the macOS port of the Linux `dockswain.sh`, with the Linux-only bits swapped 
 |---------------------------|-----------------------------------------------|
 | `secret-tool` / KWallet   | macOS **Keychain** (via the Security framework) |
 | Konsole / Kate            | **Terminal.app** (via `osascript`)            |
-| `find -printf`, `stat -c` | not needed by the ported subcommands          |
+| `find -printf` (local)    | local pane listed natively in Swift           |
 | `/run/user/<uid>` socket  | per-user `$TMPDIR` control socket             |
 | Remmina/FileZilla import  | **`~/.ssh/config`** import                    |
 
@@ -85,17 +85,27 @@ Authentication is non-interactive and the SSH connection is multiplexed
 (`ControlPersist`), so the first connection stays warm and every poll/action after
 it reuses the same socket and returns in milliseconds.
 
-## What's ported, and what isn't (yet)
+## Features
 
-**Ported:** server config + Keychain passwords, `~/.ssh/config` import, container
-list, start/stop/restart/remove, auto-following logs, exec-into-container, open SSH
-terminal, `docker compose` up/down, connection probe with readable error hints.
+- **Containers:** live list with start/stop/restart/remove, **filter bar** (search +
+  running-only), **group by network**, **pin to top**, auto-following **logs**, exec a
+  shell (Terminal.app), and a running/total menu-bar badge.
+- **Live CPU/memory stats** (optional, off by default — `docker stats` is slower).
+- **Compose projects:** `docker compose` up/down and a peek at the compose file.
+- **Disk & cleanup:** docker data-root usage bar, `docker system df` breakdown, safe
+  one-click prunes (build cache / dangling images / stopped containers, each
+  confirmed), and per-container log sizes with a truncate button.
+- **File manager (SFTP):** Local ↔ Remote panes, navigate/mkdir/rename/delete, and
+  upload/download that reuses the warm SSH master (scp, no second password). Local
+  listing is native; remote is over SSH.
+- **Nginx:** browse `/etc/nginx` sites, enable/disable, view/**edit** a config inline
+  (written back over SSH), run `nginx -t`, and reload.
+- **Certbot SSL:** list certificates and issue a new one with `certbot --nginx`
+  (optional HTTP→HTTPS redirect).
+- **Servers:** add by hand or import from `~/.ssh/config`; passwords in the Keychain.
 
-**Not yet ported** from the Linux build (these leaned on KDE/Linux tooling —
-Dolphin, KIO, `find -printf`, Kate): the dual-pane SFTP **file manager** and sync,
-**nginx** site management, **certbot** SSL, disk-usage/log-truncation, and live
-CPU/memory stats. The backend script is structured so these can be added the same
-way the existing subcommands are.
+Everything runs over one multiplexed SSH connection, so polls and actions return in
+milliseconds and interactive terminals/transfers don't re-authenticate.
 
 ## License
 

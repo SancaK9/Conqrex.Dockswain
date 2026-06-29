@@ -8,6 +8,7 @@ struct Backend {
     struct Options {
         var dockerCmd: String = "docker"
         var sshTimeout: Int = 5
+        var nginxDir: String = "/etc/nginx"
     }
 
     enum BackendError: LocalizedError {
@@ -37,12 +38,15 @@ struct Backend {
 
     // MARK: - Generic JSON object reply ({"ok":bool,...})
 
-    private struct Reply: Decodable {
+    struct Reply: Decodable {
         let ok: Bool
         let reason: String?
         let version: String?
         let text: String?
         let argv: [String]?
+        let pass: Bool?       // nginx-test
+        let output: String?   // nginx-test / certbot
+        let reclaimed: String?
     }
 
     // MARK: - Public API
@@ -108,14 +112,15 @@ struct Backend {
 
     // MARK: - Process plumbing
 
-    private func sshArgs(_ s: Server) -> [String] {
+    func sshArgs(_ s: Server) -> [String] {
         [s.target, String(s.port), s.keyPath]
     }
 
-    private func env(_ s: Server?) -> [String: String] {
+    func env(_ s: Server?) -> [String: String] {
         var e = ProcessInfo.processInfo.environment
         e["CNQ_DOCKER_CMD"] = options.dockerCmd
         e["CNQ_SSH_TIMEOUT"] = String(options.sshTimeout)
+        e["CNQ_NGINX_DIR"] = options.nginxDir
         if let s {
             e["CNQ_AUTH"] = s.auth.rawValue
             if s.auth == .password {
@@ -129,7 +134,7 @@ struct Backend {
         return e
     }
 
-    private func runRaw(_ args: [String], env: [String: String]) async throws -> String {
+    func runRaw(_ args: [String], env: [String: String]) async throws -> String {
         guard let script = Backend.scriptURL else { throw BackendError.scriptMissing }
         return try await withCheckedThrowingContinuation { cont in
             let p = Process()
@@ -151,7 +156,7 @@ struct Backend {
         }
     }
 
-    private func runReply(_ args: [String], env: [String: String]) async throws -> Reply {
+    func runReply(_ args: [String], env: [String: String]) async throws -> Reply {
         let out = try await runRaw(args, env: env)
         // helper always prints one JSON object; take the last non-empty line
         guard let line = out.split(whereSeparator: \.isNewline).last(where: { !$0.isEmpty }),
