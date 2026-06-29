@@ -9,6 +9,7 @@ struct Backend {
         var dockerCmd: String = "docker"
         var sshTimeout: Int = 5
         var nginxDir: String = "/etc/nginx"
+        var sftpTool: String = "auto"      // auto | rsync | scp
     }
 
     enum BackendError: LocalizedError {
@@ -121,6 +122,7 @@ struct Backend {
         e["CNQ_DOCKER_CMD"] = options.dockerCmd
         e["CNQ_SSH_TIMEOUT"] = String(options.sshTimeout)
         e["CNQ_NGINX_DIR"] = options.nginxDir
+        e["CNQ_SFTP_TOOL"] = options.sftpTool
         if let s {
             e["CNQ_AUTH"] = s.auth.rawValue
             e["CNQ_SUDO"] = s.useSudo ? "1" : "0"

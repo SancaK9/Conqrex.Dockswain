@@ -51,7 +51,7 @@ struct LogsView: View {
                 let fresh = await state.fetchLogs(container)
                 if !Task.isCancelled { text = fresh.isEmpty ? "(no output)" : fresh }
                 if !follow { break }
-                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                try? await Task.sleep(nanoseconds: UInt64(max(1, state.logFollowInterval) * 1_000_000_000))
             }
         }
     }

@@ -26,6 +26,50 @@ final class AppState: ObservableObject {
         didSet { UserDefaults.standard.set(nginxDir, forKey: "nginxDir") }
     }
 
+    // Behaviour toggles (mirror the Linux build's configGeneral)
+    @Published var showCompose: Bool = UDefault.bool("showCompose", true) {
+        didSet { UserDefaults.standard.set(showCompose, forKey: "showCompose") }
+    }
+    @Published var confirmDestructive: Bool = UDefault.bool("confirmDestructive", true) {
+        didSet { UserDefaults.standard.set(confirmDestructive, forKey: "confirmDestructive") }
+    }
+    @Published var hideExitedDefault: Bool = UserDefaults.standard.bool(forKey: "hideExitedDefault") {
+        didSet { UserDefaults.standard.set(hideExitedDefault, forKey: "hideExitedDefault") }
+    }
+    @Published var timeFormat24h: Bool = UDefault.bool("timeFormat24h", true) {
+        didSet { UserDefaults.standard.set(timeFormat24h, forKey: "timeFormat24h") }
+    }
+    @Published var sshConnectTimeout: Int = UDefault.int("sshConnectTimeout", 5) {
+        didSet { UserDefaults.standard.set(sshConnectTimeout, forKey: "sshConnectTimeout") }
+    }
+    @Published var statsInterval: Double = UDefault.double("statsInterval", 2) {
+        didSet { UserDefaults.standard.set(statsInterval, forKey: "statsInterval"); sessions.forEach { $0.setStatsInterval(statsInterval) } }
+    }
+    @Published var logTail: Int = UDefault.int("logTail", 400) {
+        didSet { UserDefaults.standard.set(logTail, forKey: "logTail") }
+    }
+    @Published var logFollowInterval: Double = UDefault.double("logFollowInterval", 2) {
+        didSet { UserDefaults.standard.set(logFollowInterval, forKey: "logFollowInterval") }
+    }
+    @Published var sftpTool: String = UserDefaults.standard.string(forKey: "sftpTool") ?? "auto" {
+        didSet { UserDefaults.standard.set(sftpTool, forKey: "sftpTool") }
+    }
+    @Published var defaultLocalDir: String = UserDefaults.standard.string(forKey: "defaultLocalDir") ?? "" {
+        didSet { UserDefaults.standard.set(defaultLocalDir, forKey: "defaultLocalDir") }
+    }
+    @Published var syncDefaultFilter: String = UserDefaults.standard.string(forKey: "syncDefaultFilter") ?? "" {
+        didSet { UserDefaults.standard.set(syncDefaultFilter, forKey: "syncDefaultFilter") }
+    }
+    @Published var showHiddenFiles: Bool = UserDefaults.standard.bool(forKey: "showHiddenFiles") {
+        didSet { UserDefaults.standard.set(showHiddenFiles, forKey: "showHiddenFiles") }
+    }
+    @Published var editorApp: String = UserDefaults.standard.string(forKey: "editorApp") ?? "" {
+        didSet { UserDefaults.standard.set(editorApp, forKey: "editorApp") }
+    }
+    @Published var terminalApp: String = UserDefaults.standard.string(forKey: "terminalApp") ?? "Terminal" {
+        didSet { UserDefaults.standard.set(terminalApp, forKey: "terminalApp") }
+    }
+
     // Filtering (session-only)
     @Published var searchText: String = ""
     @Published var runningOnly: Bool = false
@@ -34,10 +78,20 @@ final class AppState: ObservableObject {
     @Published var pinned: Set<String> = Set(UserDefaults.standard.stringArray(forKey: "pinned") ?? []) {
         didSet { UserDefaults.standard.set(Array(pinned), forKey: "pinned") }
     }
+    // Favourite networks (persisted) — sorted first in the group-by-network view.
+    @Published var favNetworks: Set<String> = Set(UserDefaults.standard.stringArray(forKey: "favNetworks") ?? []) {
+        didSet { UserDefaults.standard.set(Array(favNetworks), forKey: "favNetworks") }
+    }
 
     // Open tabs
     @Published var sessions: [ServerSession] = []
     @Published var activeID: UUID? { didSet { onActiveChange() } }
+
+    /// Live file-transfer queue (shared so it survives screen navigation).
+    let transfers = TransferManager()
+
+    /// Active external-editor sessions with live save-back to the server.
+    let editor = ExternalEditManager()
 
     private var sessionCancellables: [UUID: AnyCancellable] = [:]
 
@@ -60,7 +114,11 @@ final class AppState: ObservableObject {
     var unopenedServers: [Server] { servers.filter { s in !sessions.contains { $0.id == s.id } } }
 
     func makeBackend() -> Backend {
-        var b = Backend(); b.options.dockerCmd = dockerCmd; b.options.nginxDir = nginxDir
+        var b = Backend()
+        b.options.dockerCmd = dockerCmd
+        b.options.nginxDir = nginxDir
+        b.options.sshTimeout = sshConnectTimeout
+        b.options.sftpTool = sftpTool
         return b
     }
 
@@ -105,12 +163,22 @@ final class AppState: ObservableObject {
         for c in displayedContainers {
             groups[appNetwork(c.networks), default: []].append(c)
         }
-        return groups.sorted { $0.key < $1.key }.map { ($0.key, $0.value) }
+        return groups.sorted { a, b in
+            let fa = favNetworks.contains(a.key), fb = favNetworks.contains(b.key)
+            if fa != fb { return fa }                 // favourites first
+            return a.key < b.key
+        }.map { ($0.key, $0.value) }
+    }
+
+    func isFavNetwork(_ n: String) -> Bool { favNetworks.contains(n) }
+    func toggleFavNetwork(_ n: String) {
+        if favNetworks.contains(n) { favNetworks.remove(n) } else { favNetworks.insert(n) }
     }
 
     init() {
         loadServers()
         if refreshInterval < 2 { refreshInterval = 5 }
+        runningOnly = hideExitedDefault       // start filtered if the user set that default
         restoreOpenTabs()
     }
 
@@ -142,7 +210,8 @@ final class AppState: ObservableObject {
     func open(_ server: Server, makeActive: Bool = true, persist: Bool = true) {
         if !sessions.contains(where: { $0.id == server.id }) {
             let session = ServerSession(server: server, dockerCmd: dockerCmd,
-                                        nginxDir: nginxDir, refreshInterval: refreshInterval)
+                                        nginxDir: nginxDir, refreshInterval: refreshInterval,
+                                        statsInterval: statsInterval, sshTimeout: sshConnectTimeout)
             sessions.append(session)
             sessionCancellables[session.id] = session.objectWillChange.sink { [weak self] in
                 self?.objectWillChange.send()
@@ -217,7 +286,7 @@ final class AppState: ObservableObject {
     // MARK: - Actions (delegate to the active session)
 
     func perform(_ act: String, on container: Container) { active?.perform(act, on: container) }
-    func fetchLogs(_ container: Container) async -> String { await active?.fetchLogs(container) ?? "" }
+    func fetchLogs(_ container: Container) async -> String { await active?.fetchLogs(container, tail: logTail) ?? "" }
 
     func openExecTerminal(_ container: Container) {
         guard let server = selectedServer else { return }
@@ -252,12 +321,32 @@ final class AppState: ObservableObject {
         let full = ([command] + argv)
             .map { "'" + $0.replacingOccurrences(of: "'", with: "'\\''") + "'" }
             .joined(separator: " ")
-        let script = "tell application \"Terminal\"\nactivate\ndo script \"" +
-            full.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"") +
-            "\"\nend tell"
+        let cmd = full.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
+        // iTerm uses a different scripting vocabulary than Terminal.app.
+        let script: String
+        if terminalApp.lowercased().contains("iterm") {
+            script = "tell application \"iTerm\"\nactivate\nset w to (create window with default profile)\n" +
+                     "tell current session of w to write text \"\(cmd)\"\nend tell"
+        } else {
+            script = "tell application \"Terminal\"\nactivate\ndo script \"\(cmd)\"\nend tell"
+        }
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
         p.arguments = ["-e", script]
         try? p.run()
+    }
+}
+
+/// UserDefaults reads with a real default for keys that may not exist yet
+/// (`UserDefaults.bool` returns false for a missing key, which we don't want).
+enum UDefault {
+    static func bool(_ key: String, _ def: Bool) -> Bool {
+        UserDefaults.standard.object(forKey: key) as? Bool ?? def
+    }
+    static func int(_ key: String, _ def: Int) -> Int {
+        UserDefaults.standard.object(forKey: key) as? Int ?? def
+    }
+    static func double(_ key: String, _ def: Double) -> Double {
+        UserDefaults.standard.object(forKey: key) as? Double ?? def
     }
 }

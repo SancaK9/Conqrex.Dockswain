@@ -109,6 +109,17 @@ extension Backend {
         try await okOrThrow(["scp-down"] + sshArgs(s) + [remote, local, recursive ? "1" : "0"], on: s)
     }
 
+    /// Build the (executable, args, env) for a streaming `xfer-run`, which the
+    /// TransferManager launches as a long-running, cancellable Process and reads
+    /// progress events from live. `syncMode` is "" or newer/new-only/size/existing.
+    func transferCommand(up: Bool, src: String, dst: String, recursive: Bool,
+                         syncMode: String, on s: Server) -> (exe: URL, args: [String], env: [String: String])? {
+        guard let script = Backend.scriptURL else { return nil }
+        let args = [script.path, "xfer-run"] + sshArgs(s)
+                 + [up ? "up" : "down", src, dst, recursive ? "1" : "0", syncMode]
+        return (URL(fileURLWithPath: "/bin/bash"), args, env(s))
+    }
+
     // MARK: - Read / write remote file
 
     func readFile(_ path: String, on s: Server) async throws -> String {
@@ -124,11 +135,12 @@ extension Backend {
 
     // MARK: - Nginx
 
-    func nginxSites(_ s: Server) async throws -> (dir: String, sites: [NginxSite]) {
+    func nginxSites(_ s: Server) async throws -> (dir: String, hasConf: Bool, sites: [NginxSite]) {
         let out = try await runRaw(["nginx-list"] + sshArgs(s), env: env(s))
         let dir = (try? decodeField(out, key: "dir", as: String.self)) ?? "/etc/nginx"
+        let hasConf = (try? decodeField(out, key: "hasConf", as: Bool.self)) ?? false
         let sites = try decodeField(out, key: "sites", as: [NginxSite].self)
-        return (dir, sites)
+        return (dir, hasConf, sites)
     }
 
     func nginxToggle(_ act: String, fileName: String, on s: Server) async throws {

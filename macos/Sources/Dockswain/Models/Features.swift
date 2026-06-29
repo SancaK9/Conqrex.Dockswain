@@ -90,7 +90,11 @@ struct Cert: Identifiable, Decodable, Equatable {
     let name: String
     let domains: String
     let expiry: String
+    var valid: String = ""        // "VALID: 60 days" / "INVALID: EXPIRED" / ""
     var id: String { name }
+
+    /// True unless certbot reported the cert as INVALID/expired.
+    var isValid: Bool { !valid.uppercased().contains("INVALID") }
 }
 
 // MARK: - byte formatting helper

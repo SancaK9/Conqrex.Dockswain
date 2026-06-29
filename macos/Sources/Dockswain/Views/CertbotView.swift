@@ -8,10 +8,16 @@ struct CertbotView: View {
 
     @State private var certs: [Cert] = []
     @State private var status = "Loading…"
-    @State private var domains = ""
+    @State private var domains: String
     @State private var redirect = true
     @State private var busy = false
     @State private var result: (ok: Bool, text: String)?
+
+    /// `prefill` seeds the domains field when arriving from a site's SSL shield.
+    init(prefill: String = "", onBack: @escaping () -> Void) {
+        self.onBack = onBack
+        _domains = State(initialValue: prefill.replacingOccurrences(of: " ", with: ", "))
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -42,21 +48,32 @@ struct CertbotView: View {
                     if certs.isEmpty {
                         Text(status).font(.caption).foregroundStyle(.secondary)
                     } else {
-                        ForEach(certs) { c in
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(c.name).font(.system(size: 12, weight: .medium))
-                                Text(c.domains).font(.caption2).foregroundStyle(.secondary).lineLimit(2)
-                                Text("Expires: \(c.expiry)").font(.caption2).foregroundStyle(.secondary)
-                            }
-                            .padding(8)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(0.05)))
-                        }
+                        ForEach(certs) { certRow($0) }
                     }
                 }.padding(12)
             }
         }
         .task { await load() }
+    }
+
+    private func certRow(_ c: Cert) -> some View {
+        let ok = c.isValid
+        return VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 6) {
+                Image(systemName: ok ? "checkmark.shield.fill" : "xmark.shield.fill")
+                    .font(.system(size: 11)).foregroundStyle(ok ? Color.green : Color.red)
+                Text(c.name).font(.system(size: 12, weight: .medium))
+                Spacer()
+                if !c.valid.isEmpty {
+                    Text(c.valid).font(.caption2).foregroundStyle(ok ? Color.secondary : Color.red)
+                }
+            }
+            Text(c.domains).font(.caption2).foregroundStyle(.secondary).lineLimit(2)
+            Text("Expires: \(c.expiry)").font(.caption2).foregroundStyle(.secondary)
+        }
+        .padding(8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(0.05)))
     }
 
     private func load() async {

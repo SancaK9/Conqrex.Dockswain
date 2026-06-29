@@ -10,6 +10,7 @@ struct ComposeView: View {
     @State private var busy: String?            // project name currently acting
     @State private var viewing: ComposeProject?
     @State private var fileText = ""
+    @State private var confirmingDown: ComposeProject?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -31,6 +32,16 @@ struct ComposeView: View {
             }
         }
         .task { await load() }
+        .confirmationDialog("Bring \(confirmingDown?.name ?? "") down?",
+                            isPresented: Binding(get: { confirmingDown != nil },
+                                                 set: { if !$0 { confirmingDown = nil } })) {
+            Button("Compose down", role: .destructive) {
+                if let p = confirmingDown { act("down", p) }; confirmingDown = nil
+            }
+            Button("Cancel", role: .cancel) { confirmingDown = nil }
+        } message: {
+            Text("This stops and removes the project's containers (docker compose down).")
+        }
     }
 
     private func projectRow(_ p: ComposeProject) -> some View {
@@ -46,7 +57,9 @@ struct ComposeView: View {
             } else {
                 if !p.configFiles.isEmpty {
                     Button("up") { act("up", p) }.controlSize(.small)
-                    Button("down") { act("down", p) }.controlSize(.small)
+                    Button("down") {
+                        if state.confirmDestructive { confirmingDown = p } else { act("down", p) }
+                    }.controlSize(.small)
                     Button { Task { await openFile(p) } } label: { Image(systemName: "doc.text") }
                         .buttonStyle(.borderless).help("View compose file")
                 }

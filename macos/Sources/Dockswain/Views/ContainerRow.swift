@@ -63,7 +63,9 @@ struct ContainerRow: View {
                     .foregroundStyle(state.isPinned(container) ? Color.accentColor : Color.primary)
             }
             .buttonStyle(.borderless).help(state.isPinned(container) ? "Unpin" : "Pin to top")
-            iconButton("trash", "Remove") { confirmingRemove = true }
+            iconButton("trash", "Remove") {
+                if state.confirmDestructive { confirmingRemove = true } else { state.perform("rm", on: container) }
+            }
         }
     }
 

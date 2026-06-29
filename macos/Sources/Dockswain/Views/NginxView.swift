@@ -1,70 +1,73 @@
 import SwiftUI
 
-/// Browse /etc/nginx in two tabs: server blocks ("Sites") and the shared include
-/// snippets under conf.d ("conf.d" — upstreams, maps, …). Both support enable/disable,
-/// view/edit a config inline, and the conf.d tab additionally creates and deletes files.
-/// `nginx -t` and reload apply to the whole server. Editing reuses the warm SSH
-/// connection (read/write file, sudo-aware via the server's "Use sudo" setting).
+/// Browse /etc/nginx: a dedicated nginx.conf row, then each vhost with an enable/
+/// disable switch, an SSL status shield (green when the config has a TLS block, red
+/// when not — click to issue/renew via certbot), and view / edit buttons. Editing
+/// reuses the warm SSH connection (read/write file). Also runs `nginx -t` + reload.
 struct NginxView: View {
-    let openCertbot: () -> Void
+    /// Jump to the certbot screen, optionally prefilled with a site's domains.
+    let openCertbot: (String) -> Void
     let onBack: () -> Void
     @EnvironmentObject var state: AppState
 
-    enum Tab: String, CaseIterable { case sites = "Sites", confd = "conf.d" }
-
-    @State private var tab: Tab = .sites
-
-    @State private var sites: [NginxSite] = []
-    @State private var confd: [ConfdFile] = []
-    @State private var dir = "/etc/nginx"
-    @State private var confdDir = "/etc/nginx/conf.d"
-    @State private var status = "Loading…"
-    @State private var confdStatus = "Loading…"
-    @State private var confdLoaded = false
-    @State private var testResult: (pass: Bool, text: String)?
-
-    @State private var editing: EditTarget?
-    @State private var editText = ""
-    @State private var creating = false        // new-site form
-    @State private var creatingConfd = false    // new conf.d file (name prompt)
-    @State private var newConfdName = ""
-    @State private var pendingDelete: ConfdFile?
-    @State private var busy = false
-
-    /// A file open in the inline editor — a site, an existing snippet, or a new snippet.
-    struct EditTarget: Identifiable, Equatable {
-        let name: String
+    /// A file we can view (read-only) or edit, identified by its remote path.
+    /// `isNew` means it doesn't exist yet (don't read it; save creates it).
+    private struct FileTarget: Identifiable, Equatable {
+        let title: String
         let path: String
-        let isNew: Bool
+        var isNew: Bool = false
         var id: String { path }
     }
 
+    enum Tab: String, CaseIterable { case sites = "Sites", confd = "conf.d" }
+    @State private var tab: Tab = .sites
+
+    @State private var sites: [NginxSite] = []
+    @State private var dir = "/etc/nginx"
+    @State private var hasConf = false
+    @State private var status = "Loading…"
+    @State private var testResult: (pass: Bool, text: String)?
+    @State private var editing: FileTarget?
+    @State private var viewing: FileTarget?
+    @State private var fileText = ""
+    @State private var creating = false
+    @State private var busy = false
+
+    // conf.d snippets (upstreams, maps, includes) — the second tab.
+    @State private var confd: [ConfdFile] = []
+    @State private var confdDir = "/etc/nginx/conf.d"
+    @State private var confdStatus = "Loading…"
+    @State private var confdLoaded = false
+    @State private var creatingConfd = false
+    @State private var newConfdName = ""
+    @State private var pendingDelete: ConfdFile?
+
+    private var confPath: String { dir + "/nginx.conf" }
+
     var body: some View {
         VStack(spacing: 0) {
-            FeatureHeader(title: "Nginx", trailing: AnyView(HStack(spacing: 10) {
+            FeatureHeader(title: "Nginx \(dir)", trailing: AnyView(HStack(spacing: 10) {
                 Button { startCreate() } label: { Image(systemName: "plus") }
-                    .buttonStyle(.borderless)
-                    .help(tab == .sites ? "New website" : "New conf.d file")
-                Button { openCertbot() } label: { Image(systemName: "lock.shield") }
+                    .buttonStyle(.borderless).help(tab == .sites ? "New website" : "New conf.d file")
+                Button { openCertbot("") } label: { Image(systemName: "lock.shield") }
                     .buttonStyle(.borderless).help("SSL certificates (certbot)")
                 Button { Task { await reloadCurrent() } } label: { Image(systemName: "arrow.clockwise") }
                     .buttonStyle(.borderless)
             }), onBack: onBack)
 
             if creating {
-                NewSiteForm(onCancel: { creating = false }, onCreated: {
-                    creating = false; openCertbot()
+                NewSiteForm(onCancel: { creating = false }, onCreated: { domains in
+                    creating = false; openCertbot(domains)
                 }, onDone: { creating = false; Task { await load() } })
             } else if creatingConfd { confdNameForm }
+            else if let viewing { viewer(viewing) }
             else if let editing { editor(editing) }
-            else { main }
+            else { browser }
         }
         .task { await load() }
     }
 
-    // MARK: - main (tabs + actions)
-
-    private var main: some View {
+    private var browser: some View {
         VStack(spacing: 0) {
             HStack {
                 Button { Task { await runTest() } } label: { Label("Test", systemImage: "checkmark.seal") }
@@ -74,39 +77,42 @@ struct NginxView: View {
                 Spacer()
                 if busy { ProgressView().controlSize(.small) }
             }.padding(.horizontal, 8).padding(.top, 8)
-
             Picker("", selection: $tab) {
                 ForEach(Tab.allCases, id: \.self) { Text($0.rawValue).tag($0) }
-            }
-            .pickerStyle(.segmented).labelsHidden().padding(8)
+            }.pickerStyle(.segmented).labelsHidden().padding(8)
             .onChange(of: tab) { _ in if tab == .confd && !confdLoaded { Task { await loadConfd() } } }
-
             if let t = testResult {
                 Text(t.text).font(.caption2.monospaced())
                     .foregroundStyle(t.pass ? .green : .red)
                     .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 8)
             }
             Divider()
-            if tab == .sites { sitesBrowser } else { confdBrowser }
+            if tab == .sites { sitesList } else { confdList }
         }
     }
 
-    private var sitesBrowser: some View {
-        Group {
-            if sites.isEmpty {
-                placeholder(status)
-            } else {
-                ScrollView { VStack(spacing: 4) { ForEach(sites) { siteRow($0) } }.padding(8) }
-            }
+    private var sitesList: some View {
+        ScrollView {
+            VStack(spacing: 6) {
+                if hasConf { confRow }
+                if sites.isEmpty {
+                    Text(status).font(.caption).foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .center).padding(.vertical, 24)
+                } else {
+                    HStack { Text("Sites").font(.caption2).foregroundStyle(.secondary); Spacer() }
+                    ForEach(sites) { siteRow($0) }
+                }
+            }.padding(8)
         }
     }
 
-    private var confdBrowser: some View {
+    private var confdList: some View {
         Group {
             if confd.isEmpty {
-                placeholder(confdStatus)
+                Text(confdStatus).font(.caption).foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                ScrollView { VStack(spacing: 4) { ForEach(confd) { confdRow($0) } }.padding(8) }
+                ScrollView { VStack(spacing: 6) { ForEach(confd) { confdRow($0) } }.padding(8) }
             }
         }
         .confirmationDialog("Delete \(pendingDelete?.name ?? "")?",
@@ -120,45 +126,22 @@ struct NginxView: View {
         }
     }
 
-    private func placeholder(_ text: String) -> some View {
-        VStack { Spacer(); Text(text).font(.caption).foregroundStyle(.secondary); Spacer() }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-
-    private func siteRow(_ s: NginxSite) -> some View {
-        HStack(spacing: 8) {
-            Image(systemName: s.enabled ? "checkmark.circle.fill" : "circle")
-                .foregroundStyle(s.enabled ? .green : .secondary)
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 4) {
-                    Text(s.fileName).font(.system(size: 12, weight: .medium)).lineLimit(1)
-                    if s.tls { Image(systemName: "lock.fill").font(.system(size: 8)).foregroundStyle(.green) }
-                }
-                if !s.serverName.isEmpty {
-                    Text(s.serverName).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
-                }
-            }
-            Spacer()
-            Button(s.enabled ? "disable" : "enable") { toggleSite(s) }.controlSize(.small)
-            Button { Task { await openEditor(name: s.fileName, path: s.path) } } label: { Image(systemName: "pencil") }
-                .buttonStyle(.borderless).help("View / edit")
-        }
-        .padding(8)
-        .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(0.05)))
-    }
-
     private func confdRow(_ f: ConfdFile) -> some View {
         HStack(spacing: 8) {
-            Image(systemName: f.enabled ? "checkmark.circle.fill" : "circle")
-                .foregroundStyle(f.enabled ? .green : .secondary)
+            Toggle("", isOn: Binding(get: { f.enabled }, set: { _ in toggleConfd(f) }))
+                .labelsHidden().toggleStyle(.switch).controlSize(.mini)
             VStack(alignment: .leading, spacing: 2) {
-                Text(f.name).font(.system(size: 12, weight: .medium)).lineLimit(1)
+                Text(f.name).font(.system(size: 12, weight: .medium, design: .monospaced))
+                    .lineLimit(1).opacity(f.enabled ? 1 : 0.55)
                 Text(Bytes.human(f.size)).font(.caption2).foregroundStyle(.secondary)
             }
             Spacer()
-            Button(f.enabled ? "disable" : "enable") { toggleConfd(f) }.controlSize(.small)
-            Button { Task { await openEditor(name: f.name, path: f.path) } } label: { Image(systemName: "pencil") }
-                .buttonStyle(.borderless).help("View / edit")
+            Button { Task { await openViewer(FileTarget(title: f.name, path: f.path)) } } label: {
+                Image(systemName: "doc.text.magnifyingglass")
+            }.buttonStyle(.borderless).help("View")
+            Button { Task { await openEditor(FileTarget(title: f.name, path: f.path)) } } label: {
+                Image(systemName: "pencil")
+            }.buttonStyle(.borderless).help("Edit")
             Button(role: .destructive) { pendingDelete = f } label: { Image(systemName: "trash") }
                 .buttonStyle(.borderless).help("Delete")
         }
@@ -166,25 +149,7 @@ struct NginxView: View {
         .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(0.05)))
     }
 
-    // MARK: - editor (shared by sites + conf.d)
-
-    private func editor(_ t: EditTarget) -> some View {
-        VStack(spacing: 0) {
-            HStack {
-                Button { editing = nil } label: { Image(systemName: "chevron.left") }.buttonStyle(.borderless)
-                Text(t.name).font(.caption).lineLimit(1)
-                Spacer()
-                Button("Save") { Task { await save(t) } }.controlSize(.small)
-            }.padding(8)
-            Divider()
-            TextEditor(text: $editText)
-                .font(.system(size: 11, design: .monospaced))
-                .padding(4)
-        }
-    }
-
-    // MARK: - new conf.d file (name prompt → opens the editor with a template)
-
+    // New conf.d file: ask for a name, then open the editor seeded with a template.
     private var confdNameForm: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
@@ -202,14 +167,12 @@ struct NginxView: View {
                 Spacer()
                 Button("Cancel") { creatingConfd = false }
                 Button("Continue") { continueNewConfd() }
-                    .keyboardShortcut(.defaultAction)
-                    .disabled(sanitizedConfdName == nil)
+                    .keyboardShortcut(.defaultAction).disabled(sanitizedConfdName == nil)
             }
             Spacer()
         }.padding(12)
     }
 
-    /// Validated base name with a guaranteed extension, or nil if invalid.
     private var sanitizedConfdName: String? {
         let raw = newConfdName.trimmingCharacters(in: .whitespaces)
         guard !raw.isEmpty, raw != ".", raw != "..", !raw.contains("/") else { return nil }
@@ -221,8 +184,95 @@ struct NginxView: View {
     private func continueNewConfd() {
         guard let name = sanitizedConfdName else { return }
         creatingConfd = false
-        editText = "# \(name)\n# nginx include — e.g. an upstream {} or map {} block.\n\n"
-        editing = EditTarget(name: name, path: "\(confdDir)/\(name)", isNew: true)
+        fileText = "# \(name)\n# nginx include — e.g. an upstream {} or map {} block.\n\n"
+        editing = FileTarget(title: name, path: "\(confdDir)/\(name)", isNew: true)
+    }
+
+    // nginx.conf — view / edit the main config.
+    private var confRow: some View {
+        HStack(spacing: 8) {
+            Text("nginx.conf").font(.system(size: 12, weight: .bold, design: .monospaced))
+            Spacer()
+            Button { Task { await openViewer(FileTarget(title: "nginx.conf", path: confPath)) } } label: {
+                Image(systemName: "doc.text.magnifyingglass")
+            }.buttonStyle(.borderless).help("View")
+            Button { Task { await openEditor(FileTarget(title: "nginx.conf", path: confPath)) } } label: {
+                Image(systemName: "pencil")
+            }.buttonStyle(.borderless).help("Edit")
+        }
+        .padding(8)
+        .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(0.05)))
+    }
+
+    private func siteRow(_ s: NginxSite) -> some View {
+        HStack(spacing: 8) {
+            Toggle("", isOn: Binding(get: { s.enabled }, set: { _ in toggle(s) }))
+                .labelsHidden().toggleStyle(.switch).controlSize(.mini)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(s.fileName).font(.system(size: 12, weight: .medium, design: .monospaced))
+                    .lineLimit(1).opacity(s.enabled ? 1 : 0.55)
+                if !s.serverName.isEmpty {
+                    Text(s.serverName).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                }
+            }
+            Spacer(minLength: 4)
+
+            if s.tls {
+                Image(systemName: "lock.fill").font(.system(size: 9)).foregroundStyle(.secondary)
+                    .help("Has an SSL/TLS certificate block")
+            }
+            // SSL status shield: green = TLS block present, red = none. Click to issue/renew.
+            Button { openCertbot(s.serverName.isEmpty ? s.fileName : s.serverName) } label: {
+                Image(systemName: s.tls ? "checkmark.shield.fill" : "xmark.shield.fill")
+                    .foregroundStyle(s.tls ? .green : .red)
+            }
+            .buttonStyle(.borderless).disabled(!s.enabled)
+            .help(!s.enabled ? "Enable & reload the site first to request SSL"
+                  : s.tls ? "Renew / reissue SSL (certbot)" : "Get SSL certificate (certbot)")
+
+            Button { Task { await openViewer(FileTarget(title: s.fileName, path: s.path)) } } label: {
+                Image(systemName: "doc.text.magnifyingglass")
+            }.buttonStyle(.borderless).help("View")
+            Button { Task { await openEditor(FileTarget(title: s.fileName, path: s.path)) } } label: {
+                Image(systemName: "pencil")
+            }.buttonStyle(.borderless).help("Edit")
+        }
+        .padding(8)
+        .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(0.05)))
+    }
+
+    private func viewer(_ t: FileTarget) -> some View {
+        VStack(spacing: 0) {
+            HStack {
+                Button { viewing = nil } label: { Image(systemName: "chevron.left") }.buttonStyle(.borderless)
+                Text(t.title).font(.caption.monospaced()).lineLimit(1)
+                Spacer()
+                Button { Task { viewing = nil; await openEditor(t) } } label: { Label("Edit", systemImage: "pencil") }
+                    .controlSize(.small)
+            }.padding(8)
+            Divider()
+            ScrollView {
+                Text(fileText).font(.system(size: 11, design: .monospaced))
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading).padding(8)
+            }
+        }
+    }
+
+    private func editor(_ t: FileTarget) -> some View {
+        VStack(spacing: 0) {
+            HStack {
+                Button { editing = nil } label: { Image(systemName: "chevron.left") }.buttonStyle(.borderless)
+                Text(t.title).font(.caption.monospaced()).lineLimit(1)
+                Spacer()
+                Button("Save") { Task { await save(t) } }.controlSize(.small)
+            }.padding(8)
+            Divider()
+            TextEditor(text: $fileText)
+                .font(.system(size: 11, design: .monospaced))
+                .padding(4)
+        }
     }
 
     // MARK: - actions
@@ -231,23 +281,20 @@ struct NginxView: View {
         testResult = nil
         if tab == .sites { creating = true } else { newConfdName = ""; creatingConfd = true }
     }
-
     private func reloadCurrent() async {
         if tab == .sites { await load() } else { await loadConfd() }
     }
 
     private func load() async {
         guard let srv = state.selectedServer else { status = "No server"; return }
-        // Seed from the configured dir up front so a "New conf.d file" created before the
-        // server replies still writes under the right nginx directory (refined below).
         confdDir = "\(state.nginxDir)/conf.d"
-        do { let r = try await state.makeBackend().nginxSites(srv); dir = r.dir; sites = r.sites
+        do { let r = try await state.makeBackend().nginxSites(srv)
+             dir = r.dir; hasConf = r.hasConf; sites = r.sites
              confdDir = "\(dir)/conf.d"
              status = sites.isEmpty ? "No sites found in \(dir)." : "" }
-        catch { status = error.localizedDescription; sites = [] }
+        catch { status = error.localizedDescription; sites = []; hasConf = false }
         if tab == .confd || confdLoaded { await loadConfd() }
     }
-
     private func loadConfd() async {
         guard let srv = state.selectedServer else { confdStatus = "No server"; return }
         do { let r = try await state.makeBackend().nginxConfd(srv); confdDir = r.dir; confd = r.files
@@ -255,8 +302,7 @@ struct NginxView: View {
              confdStatus = confd.isEmpty ? "No files in \(confdDir)." : "" }
         catch { confdStatus = error.localizedDescription; confd = [] }
     }
-
-    private func toggleSite(_ s: NginxSite) {
+    private func toggle(_ s: NginxSite) {
         guard let srv = state.selectedServer else { return }
         Task { try? await state.makeBackend().nginxToggle(s.enabled ? "disable" : "enable", fileName: s.fileName, on: srv); await load() }
     }
@@ -288,17 +334,23 @@ struct NginxView: View {
         do { try await state.makeBackend().nginxReload(srv); testResult = (true, "Reloaded.") }
         catch { testResult = (false, error.localizedDescription) }
     }
-    private func openEditor(name: String, path: String) async {
+    private func openViewer(_ t: FileTarget) async {
         guard let srv = state.selectedServer else { return }
-        editText = (try? await state.makeBackend().readFile(path, on: srv)) ?? ""
-        editing = EditTarget(name: name, path: path, isNew: false)
+        fileText = (try? await state.makeBackend().readFile(t.path, on: srv)) ?? ""
+        viewing = t
     }
-    private func save(_ t: EditTarget) async {
+    private func openEditor(_ t: FileTarget) async {
         guard let srv = state.selectedServer else { return }
-        do { try await state.makeBackend().writeFile(t.path, content: editText, on: srv)
-             editing = nil
-             await reloadCurrent() }
-        catch { testResult = (false, error.localizedDescription) }
+        fileText = (try? await state.makeBackend().readFile(t.path, on: srv)) ?? ""
+        editing = t
+    }
+    private func save(_ t: FileTarget) async {
+        guard let srv = state.selectedServer else { return }
+        do {
+            try await state.makeBackend().writeFile(t.path, content: fileText, on: srv)
+            editing = nil
+            await reloadCurrent()
+        } catch { testResult = (false, error.localizedDescription) }
     }
 }
 
@@ -306,8 +358,8 @@ struct NginxView: View {
 /// the WebSocket upgrade headers) or a static site (root + try_files).
 private struct NewSiteForm: View {
     let onCancel: () -> Void
-    let onCreated: () -> Void      // created, then jump to certbot (Get SSL)
-    let onDone: () -> Void         // created, stay in nginx
+    let onCreated: (String) -> Void   // created, then jump to certbot with these domains
+    let onDone: () -> Void            // created, stay in nginx
     @EnvironmentObject var state: AppState
 
     enum Kind: String, CaseIterable { case proxy = "Reverse proxy", staticSite = "Static site" }
@@ -386,12 +438,13 @@ private struct NewSiteForm: View {
     private func create(thenSSL: Bool) {
         guard let srv = state.selectedServer else { return }
         busy = true; error = nil
+        let sn = serverName.trimmingCharacters(in: .whitespaces)
         Task {
             defer { busy = false }
             do {
                 try await state.makeBackend().nginxNew(name: name.trimmingCharacters(in: .whitespaces),
                                                        config: config(), on: srv)
-                thenSSL ? onCreated() : onDone()
+                thenSSL ? onCreated(sn) : onDone()
             } catch { self.error = error.localizedDescription }
         }
     }

@@ -16,6 +16,7 @@ struct Server: Identifiable, Codable, Equatable, Hashable {
     var auth: Auth = .key
     /// Path to a private key for key auth (empty = let ssh pick from agent/config).
     var keyPath: String = ""
+
     /// Run privileged remote ops (nginx, certbot, conf.d edits) via `sudo -n`. Needs
     /// NOPASSWD or a root login; leave off when the SSH user is already root.
     var useSudo: Bool = false

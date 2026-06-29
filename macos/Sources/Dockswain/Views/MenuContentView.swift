@@ -15,7 +15,7 @@ struct MenuContentView: View {
         case disk
         case files
         case nginx
-        case certbot
+        case certbot(prefill: String)
     }
     @State private var screen: Screen = .list
 
@@ -28,8 +28,8 @@ struct MenuContentView: View {
             case .compose:        ComposeView { screen = .list }
             case .disk:           DiskView { screen = .list }
             case .files:          FileManagerView { screen = .list }
-            case .nginx:          NginxView(openCertbot: { screen = .certbot }) { screen = .list }
-            case .certbot:        CertbotView { screen = .nginx }
+            case .nginx:          NginxView(openCertbot: { screen = .certbot(prefill: $0) }) { screen = .list }
+            case .certbot(let prefill): CertbotView(prefill: prefill) { screen = .nginx }
             }
         }
     }
@@ -124,7 +124,9 @@ struct MenuContentView: View {
 
     private var toolbar: some View {
         HStack(alignment: .top, spacing: 6) {
-            toolButton("rectangle.3.group", "Compose", "Compose projects") { screen = .compose }
+            if state.showCompose {
+                toolButton("rectangle.3.group", "Compose", "Compose projects") { screen = .compose }
+            }
             toolButton("internaldrive", "Disk", "Disk usage & cleanup") { screen = .disk }
             toolButton("folder", "Files", "File manager (SFTP)") { screen = .files }
             toolButton("globe", "Nginx", "Nginx sites & SSL") { screen = .nginx }
@@ -184,6 +186,11 @@ struct MenuContentView: View {
                                     Text(group.network).font(.caption.bold()).foregroundStyle(.secondary)
                                     Text("\(group.items.count)").font(.caption2).foregroundStyle(.secondary)
                                     Spacer()
+                                    Button { state.toggleFavNetwork(group.network) } label: {
+                                        Image(systemName: state.isFavNetwork(group.network) ? "star.fill" : "star")
+                                            .font(.system(size: 9))
+                                            .foregroundStyle(state.isFavNetwork(group.network) ? Color.yellow : Color.secondary)
+                                    }.buttonStyle(.borderless).help("Pin this network to the top")
                                 }
                                 .padding(.horizontal, 8).padding(.vertical, 3)
                                 .background(.bar)

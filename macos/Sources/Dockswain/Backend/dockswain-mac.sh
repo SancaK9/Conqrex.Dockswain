@@ -25,11 +25,7 @@
 #           | stack-action | readfile | writefile | sftp-home | sftp-list
 #           | sftp-mkdir | sftp-rename | sftp-delete | scp-up | scp-down
 #           | nginx-list | nginx-toggle | nginx-test | nginx-reload
-#           | nginx-confd-list | nginx-confd-toggle | nginx-confd-del
 #           | certbot-list | certbot-issue
-#
-# Env (also): CNQ_SUDO (1 = run nginx/certbot/file ops via sudo -n; the per-server
-#   "use sudo" toggle). NOPASSWD or a root login is required for sudo -n to succeed.
 #
 # Env (set by the app): CNQ_DOCKER_CMD (default "docker"), CNQ_SSH_TIMEOUT (5),
 #   CNQ_AUTH ("key" | "password"), SSHPASS (when CNQ_AUTH=password).
@@ -538,11 +534,14 @@ REMOTE
     if [ "$SSH_RC" -ne 0 ] && [ -z "$SSH_OUT" ]; then emit_err "$(classify)"; fi
     if printf '%s' "$SSH_OUT" | grep -q '@@NODIR@@'; then emit_err "no_nginx_dir"; fi
     style=$(printf '%s\n' "$SSH_OUT" | sed -n 's/^style=//p' | head -1)
+    hasconf=$(printf '%s\n' "$SSH_OUT" | sed -n 's/^conf=//p' | head -1)
+    [ "$hasconf" = 1 ] && hasconf_json=true || hasconf_json=false
     sites=$(printf '%s\n' "$SSH_OUT" | awk -F'\t' '$1=="site"{printf "%s\t%s\t%s\t%s\t%s\n",$2,$3,$4,$5,$6}' \
         | jq -Rsc 'split("\n")|map(select(length>0))|map(split("\t"))|
             map({name:.[0], path:.[1], enabled:(.[2]=="1"), tls:(.[4]=="1"), serverName:(.[5]//"")})' 2>/dev/null)
     [ -n "$sites" ] || sites="[]"
-    printf '{"ok":true,"dir":%s,"style":"%s","sites":%s}\n' "$(jstr "$NGINX_DIR")" "${style:-confd}" "$sites"
+    printf '{"ok":true,"dir":%s,"style":"%s","hasConf":%s,"sites":%s}\n' \
+        "$(jstr "$NGINX_DIR")" "${style:-confd}" "$hasconf_json" "$sites"
     ;;
 
 # nginx-toggle: ported from nginx-site. Handles both layouts — sites-enabled symlink,
@@ -712,13 +711,18 @@ REMOTE
 certbot-list)
     ssh_exec "${SUDO:+$SUDO }certbot certificates 2>/dev/null"
     if [ "$SSH_RC" -ne 0 ] && [ -z "$SSH_OUT" ]; then emit_err "no_certbot"; fi
+    # Expiry Date line looks like "<date> (VALID: 60 days)" or "(INVALID: EXPIRED)";
+    # split the parenthesised status out so the UI can flag valid vs expired certs.
     certs=$(printf '%s\n' "$SSH_OUT" | awk '
-        /Certificate Name:/ {if(name){printf "%s\t%s\t%s\n",name,dom,ex}; name=$3; dom=""; ex=""}
+        function emit() { if(name){printf "%s\t%s\t%s\t%s\n",name,dom,ex,valid} }
+        /Certificate Name:/ {emit(); name=$3; dom=""; ex=""; valid=""}
         /Domains:/ {sub(/^[[:space:]]*Domains:[[:space:]]*/,""); dom=$0}
-        /Expiry Date:/ {sub(/^[[:space:]]*Expiry Date:[[:space:]]*/,""); ex=$0}
-        END {if(name){printf "%s\t%s\t%s\n",name,dom,ex}}' | jq -Rsc '
+        /Expiry Date:/ {e=$0; sub(/^[[:space:]]*Expiry Date:[[:space:]]*/,"",e);
+            ex=e; sub(/[[:space:]]*\(.*/,"",ex);
+            valid=""; if(index(e,"(")>0){valid=e; sub(/.*\(/,"",valid); sub(/\).*/,"",valid)}}
+        END {emit()}' | jq -Rsc '
         split("\n") | map(select(length>0)) | map(split("\t")) |
-        map({name:.[0], domains:(.[1]//""), expiry:(.[2]//"")})' 2>/dev/null)
+        map({name:.[0], domains:(.[1]//""), expiry:(.[2]//""), valid:(.[3]//"")})' 2>/dev/null)
     [ -n "$certs" ] || certs="[]"
     printf '{"ok":true,"certs":%s}\n' "$certs"
     ;;
@@ -766,6 +770,94 @@ scp-up|scp-down)
         scp -o BatchMode=yes $recf "${SCPOPTS[@]}" -- "$a_src" "$a_dst" 2>/dev/null
     fi
     [ $? -eq 0 ] && printf '{"ok":true}\n' || emit_err "transfer_failed"
+    ;;
+
+# ---------------------------------------------------------------------------
+# xfer-run DIR(up|down) SRC DST REC(0|1) SYNCMODE: a *streaming* transfer. Unlike
+# scp-up/down (one blocking shot), this prints newline-delimited JSON progress
+# events to stdout that the Swift TransferManager reads live; the app cancels by
+# terminating this process (rsync/scp dies with it). Prefers rsync 3.1+ with
+# --info=progress2 for a real percentage + sync modes; else scp (indeterminate).
+#   Events: {"event":"start","tool":"rsync|scp"}
+#           {"event":"progress","pct":<0-100|-1>,"rate":"<str>"}
+#           {"event":"done","pct":100} | {"event":"error","code":"<rc|reason>"}
+# ---------------------------------------------------------------------------
+xfer-run)
+    DIR="${1:-}"; SRC="${2:-}"; DST="${3:-}"; REC="${4:-0}"; SM="${5:-}"
+    case "$DIR" in up|down) ;; *) printf '{"event":"error","code":"bad_direction"}\n'; exit 0;; esac
+    { [ -n "$SRC" ] && [ -n "$DST" ]; } || { printf '{"event":"error","code":"no_path"}\n'; exit 0; }
+    [[ "$REC" =~ ^[01]$ ]] || REC=0
+
+    # Port via -o so ONE option string works for ssh (rsync's -e), scp and rsync.
+    TOPTS="-o ConnectTimeout=${CNQ_SSH_TIMEOUT:-5} -o ControlMaster=auto -o ControlPath=${RT}/cnq-ssh-%r@%h:%p -o ControlPersist=60 -o StrictHostKeyChecking=accept-new -o Port=$PORT"
+
+    if [ "$AUTH" = password ]; then
+        # Export so any ssh that rsync/scp spawns inherits the askpass helper.
+        export SSH_ASKPASS="$ASKPASS" SSH_ASKPASS_REQUIRE=force SSHPASS
+        sshcmd="ssh -o NumberOfPasswordPrompts=1 -o PreferredAuthentications=password -o PubkeyAuthentication=no $TOPTS"
+    else
+        sshcmd="ssh -o BatchMode=yes $TOPTS"
+        [ -n "$KEY" ] && sshcmd="$sshcmd -o IdentitiesOnly=yes -i $KEY"
+    fi
+
+    # Tool selection honours CNQ_SFTP_TOOL (auto|rsync|scp). rsync needs to be on
+    # BOTH ends and 3.1+ locally (for --info=progress2 / -s); else fall back to scp.
+    tool="${CNQ_SFTP_TOOL:-auto}"
+    use=scp
+    if [ "$tool" != scp ] && command -v rsync >/dev/null 2>&1 && \
+       rsync --version 2>/dev/null | grep -qE 'version (3\.[1-9]|[4-9])'; then
+        ssh_exec "command -v rsync >/dev/null 2>&1 && echo Y"
+        [ "$SSH_OUT" = Y ] && use=rsync
+        [ "$tool" = rsync ] && use=rsync   # forced even if the remote probe failed
+    fi
+
+    if [ "$DIR" = up ]; then a_src="$SRC"; a_dst="${TARGET}:${DST}"
+    else a_src="${TARGET}:${SRC}"; a_dst="$DST"; fi
+
+    printf '{"event":"start","tool":"%s"}\n' "$use"
+
+    rc=1
+    if [ "$use" = rsync ]; then
+        rflag="-a"; [ "$REC" = 1 ] || rflag="-a --no-r"
+        # whitelisted sync mode -> rsync flag (never interpolate raw user text)
+        case "$SM" in
+            newer)    rflag="$rflag --update" ;;
+            new-only) rflag="$rflag --ignore-existing" ;;
+            size)     rflag="$rflag --size-only" ;;
+            existing) rflag="$rflag --existing" ;;
+        esac
+        # -s keeps the remote side from re-splitting spaces; LC_ALL=C so the
+        # progress numbers are dot-decimal for the parser below.
+        LC_ALL=C rsync $rflag -s --info=progress2 -e "$sshcmd" -- "$a_src" "$a_dst" 2>&1 \
+          | tr '\r' '\n' \
+          | while IFS= read -r ln; do
+                case "$ln" in
+                  *%*)
+                    pct=$(printf '%s' "$ln" | grep -oE '[0-9]+%' | tail -1 | tr -d '%')
+                    rate=$(printf '%s' "$ln" | grep -oE '[0-9.]+[kKMG]?B/s' | tail -1)
+                    [ -n "$pct" ] && printf '{"event":"progress","pct":%s,"rate":"%s"}\n' "$pct" "${rate:-}"
+                    ;;
+                esac
+            done
+        rc=${PIPESTATUS[0]}
+    else
+        # scp: no parseable progress non-interactively -> indeterminate then done/fail.
+        printf '{"event":"progress","pct":-1,"rate":""}\n'
+        recf=""; [ "$REC" = 1 ] && recf="-r"
+        if [ "$AUTH" = password ]; then
+            env "SSH_ASKPASS=$ASKPASS" SSH_ASKPASS_REQUIRE=force \
+                scp $recf $TOPTS -- "$a_src" "$a_dst" >/dev/null 2>&1
+        elif [ -n "$KEY" ]; then
+            scp -o BatchMode=yes $recf $TOPTS -o IdentitiesOnly=yes -i "$KEY" -- "$a_src" "$a_dst" >/dev/null 2>&1
+        else
+            scp -o BatchMode=yes $recf $TOPTS -- "$a_src" "$a_dst" >/dev/null 2>&1
+        fi
+        rc=$?
+    fi
+
+    if [ "$rc" -eq 0 ]; then printf '{"event":"done","pct":100}\n'
+    else printf '{"event":"error","code":"%s"}\n' "$rc"; fi
+    exit 0
     ;;
 
 *)

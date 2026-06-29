@@ -51,6 +51,8 @@ final class PanelController: ObservableObject {
         let root = MenuContentView()
             .environmentObject(state)
             .environmentObject(self)
+            .environmentObject(state.transfers)
+            .environmentObject(state.editor)
             .frame(minWidth: 320, maxWidth: .infinity, maxHeight: .infinity)
         let hosting = NSHostingView(rootView: root)
         hosting.autoresizingMask = [.width, .height]

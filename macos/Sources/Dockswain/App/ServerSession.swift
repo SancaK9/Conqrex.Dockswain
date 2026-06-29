@@ -17,15 +17,20 @@ final class ServerSession: ObservableObject, Identifiable {
 
     private var backend: Backend
     private var pollTask: Task<Void, Never>?
+    private var statsTask: Task<Void, Never>?
     private var refreshInterval: Double
+    private var statsInterval: Double
     private(set) var statsEnabled = false
 
-    init(server: Server, dockerCmd: String, nginxDir: String, refreshInterval: Double) {
+    init(server: Server, dockerCmd: String, nginxDir: String, refreshInterval: Double,
+         statsInterval: Double = 2, sshTimeout: Int = 5) {
         self.server = server
         self.refreshInterval = refreshInterval
+        self.statsInterval = statsInterval
         var b = Backend()
         b.options.dockerCmd = dockerCmd
         b.options.nginxDir = nginxDir
+        b.options.sshTimeout = sshTimeout
         self.backend = b
     }
 
@@ -38,7 +43,7 @@ final class ServerSession: ObservableObject, Identifiable {
     // MARK: - Lifecycle
 
     func start() { restartPolling() }
-    func stop() { pollTask?.cancel(); pollTask = nil }
+    func stop() { pollTask?.cancel(); pollTask = nil; statsTask?.cancel(); statsTask = nil }
 
     func setRefreshInterval(_ v: Double) {
         guard v != refreshInterval else { return }
@@ -46,9 +51,17 @@ final class ServerSession: ObservableObject, Identifiable {
         if pollTask != nil { restartPolling() }
     }
 
+    func setStatsInterval(_ v: Double) {
+        guard v != statsInterval else { return }
+        statsInterval = v
+        if statsEnabled { restartStatsPolling() }
+    }
+
     func setStatsEnabled(_ on: Bool) {
+        guard on != statsEnabled else { return }
         statsEnabled = on
-        if !on { statsByID = [:] }
+        if on { restartStatsPolling() }
+        else { statsTask?.cancel(); statsTask = nil; statsByID = [:] }
     }
 
     func setDockerCmd(_ cmd: String) { backend.options.dockerCmd = cmd }
@@ -66,6 +79,26 @@ final class ServerSession: ObservableObject, Identifiable {
         }
     }
 
+    /// Stats poll independently of the container list, at their own interval, so
+    /// CPU/mem can update faster (or slower) than the list without coupling them.
+    private func restartStatsPolling() {
+        statsTask?.cancel()
+        statsTask = Task { [weak self] in
+            while !Task.isCancelled {
+                await self?.fetchStats()
+                let interval = self?.statsInterval ?? 2
+                try? await Task.sleep(nanoseconds: UInt64(max(1, interval) * 1_000_000_000))
+            }
+        }
+    }
+
+    private func fetchStats() async {
+        guard statsEnabled, let stats = try? await backend.stats(server), !Task.isCancelled else { return }
+        var map: [String: ContainerStat] = [:]
+        for st in stats { map[String(st.id.prefix(12))] = st }
+        statsByID = map
+    }
+
     private func refresh() async {
         isLoading = true
         defer { isLoading = false }
@@ -79,11 +112,6 @@ final class ServerSession: ObservableObject, Identifiable {
             statusMessage = ""
             if serverVersion.isEmpty {
                 serverVersion = (try? await backend.probe(server)) ?? ""
-            }
-            if statsEnabled, let stats = try? await backend.stats(server), !Task.isCancelled {
-                var map: [String: ContainerStat] = [:]
-                for st in stats { map[String(st.id.prefix(12))] = st }
-                statsByID = map
             }
         } catch {
             if Task.isCancelled { return }
@@ -103,8 +131,8 @@ final class ServerSession: ObservableObject, Identifiable {
         }
     }
 
-    func fetchLogs(_ container: Container) async -> String {
-        do { return try await backend.logs(container: container.shortId, tail: 400, on: server) }
+    func fetchLogs(_ container: Container, tail: Int = 400) async -> String {
+        do { return try await backend.logs(container: container.shortId, tail: tail, on: server) }
         catch { return error.localizedDescription }
     }
 }

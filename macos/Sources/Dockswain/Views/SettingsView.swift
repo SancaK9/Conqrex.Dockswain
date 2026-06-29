@@ -85,7 +85,22 @@ struct SettingsView: View {
                         .frame(width: 110)
                 }
                 Toggle("Show live CPU/memory stats (slower)", isOn: $state.statsEnabled)
+                if state.statsEnabled {
+                    HStack {
+                        Text("Stats refresh every")
+                        Spacer()
+                        Stepper("\(Int(state.statsInterval))s", value: $state.statsInterval, in: 1...30, step: 1)
+                            .frame(width: 110)
+                    }
+                }
                 Toggle("Group containers by network", isOn: $state.groupByNetwork)
+                Toggle("Show compose projects", isOn: $state.showCompose)
+                HStack {
+                    Text("SSH connect timeout")
+                    Spacer()
+                    Stepper("\(state.sshConnectTimeout)s", value: $state.sshConnectTimeout, in: 2...60, step: 1)
+                        .frame(width: 110)
+                }
                 HStack {
                     Text("Toggle shortcut")
                     Spacer()
@@ -96,6 +111,72 @@ struct SettingsView: View {
                     Spacer()
                     TextField("/etc/nginx", text: $state.nginxDir).frame(width: 160)
                         .textFieldStyle(.roundedBorder)
+                }
+
+                Divider().padding(.vertical, 4)
+
+                // Containers & logs
+                Text("CONTAINERS & LOGS").font(.caption).foregroundStyle(.secondary)
+                Toggle("Hide exited containers by default", isOn: $state.hideExitedDefault)
+                Toggle("Confirm destructive actions (remove, compose down)", isOn: $state.confirmDestructive)
+                Toggle("Use 24-hour time", isOn: $state.timeFormat24h)
+                HStack {
+                    Text("Log lines (tail)")
+                    Spacer()
+                    Stepper("\(state.logTail)", value: $state.logTail, in: 50...5000, step: 50)
+                        .frame(width: 130)
+                }
+                HStack {
+                    Text("Log follow every")
+                    Spacer()
+                    Stepper("\(Int(state.logFollowInterval))s", value: $state.logFollowInterval, in: 1...30, step: 1)
+                        .frame(width: 110)
+                }
+
+                Divider().padding(.vertical, 4)
+
+                // File manager & transfers
+                Text("FILES & TRANSFERS").font(.caption).foregroundStyle(.secondary)
+                Toggle("Show hidden files (dotfiles)", isOn: $state.showHiddenFiles)
+                HStack {
+                    Text("Transfer tool")
+                    Spacer()
+                    Picker("", selection: $state.sftpTool) {
+                        Text("Auto").tag("auto"); Text("rsync").tag("rsync"); Text("scp").tag("scp")
+                    }.labelsHidden().frame(width: 110)
+                }
+                HStack {
+                    Text("Default sync mode")
+                    Spacer()
+                    Picker("", selection: $state.syncDefaultFilter) {
+                        Text("Overwrite").tag(""); Text("Newer only").tag("newer")
+                        Text("If size differs").tag("size"); Text("Skip existing").tag("new-only")
+                        Text("Update existing").tag("existing")
+                    }.labelsHidden().frame(width: 150)
+                }
+                HStack {
+                    Text("Default local folder")
+                    Spacer()
+                    TextField("(home)", text: $state.defaultLocalDir).frame(width: 160)
+                        .textFieldStyle(.roundedBorder)
+                }
+
+                Divider().padding(.vertical, 4)
+
+                // External tools
+                Text("EXTERNAL TOOLS").font(.caption).foregroundStyle(.secondary)
+                HStack {
+                    Text("Editor app")
+                    Spacer()
+                    TextField("(default text editor)", text: $state.editorApp).frame(width: 170)
+                        .textFieldStyle(.roundedBorder)
+                }
+                HStack {
+                    Text("Terminal app")
+                    Spacer()
+                    Picker("", selection: $state.terminalApp) {
+                        Text("Terminal").tag("Terminal"); Text("iTerm").tag("iTerm")
+                    }.labelsHidden().frame(width: 120)
                 }
             }
             .padding(12)
@@ -165,9 +246,8 @@ private struct ServerForm: View {
                         .font(.caption2).foregroundStyle(.secondary)
                 }
 
-                Toggle("Use sudo for nginx, certbot & config edits", isOn: $server.useSudo)
-                    .font(.caption)
-                Text("Runs privileged commands via sudo -n. Needs NOPASSWD sudo on the server. Leave off if you connect as root.")
+                Toggle("Use sudo for nginx / certbot / file edits", isOn: $server.useSudo)
+                Text("Runs privileged ops via sudo -n (needs NOPASSWD). Leave off when the SSH user is root.")
                     .font(.caption2).foregroundStyle(.secondary)
 
                 if let testResult {
