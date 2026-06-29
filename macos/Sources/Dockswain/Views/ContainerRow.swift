@@ -18,7 +18,12 @@ struct ContainerRow: View {
                 .frame(width: 8, height: 8)
 
             VStack(alignment: .leading, spacing: 2) {
-                Text(container.name).font(.system(size: 12, weight: .medium)).lineLimit(1)
+                HStack(spacing: 4) {
+                    if state.isPinned(container) {
+                        Image(systemName: "pin.fill").font(.system(size: 8)).foregroundStyle(.tint)
+                    }
+                    Text(container.name).font(.system(size: 12, weight: .medium)).lineLimit(1)
+                }
                 Text(container.image).font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1)
             }
             Spacer(minLength: 4)
@@ -53,6 +58,11 @@ struct ContainerRow: View {
             iconButton("arrow.clockwise", "Restart") { state.perform("restart", on: container) }
             iconButton("doc.plaintext", "Logs", action: onLogs)
             iconButton("terminal", "Exec shell") { state.openExecTerminal(container) }
+            Button { state.togglePin(container) } label: {
+                Image(systemName: state.isPinned(container) ? "pin.fill" : "pin")
+                    .foregroundStyle(state.isPinned(container) ? Color.accentColor : Color.primary)
+            }
+            .buttonStyle(.borderless).help(state.isPinned(container) ? "Unpin" : "Pin to top")
             iconButton("trash", "Remove") { confirmingRemove = true }
         }
     }

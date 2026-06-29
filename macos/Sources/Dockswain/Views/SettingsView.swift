@@ -84,6 +84,14 @@ struct SettingsView: View {
                     Stepper("\(Int(state.refreshInterval))s", value: $state.refreshInterval, in: 2...60, step: 1)
                         .frame(width: 110)
                 }
+                Toggle("Show live CPU/memory stats (slower)", isOn: $state.statsEnabled)
+                Toggle("Group containers by network", isOn: $state.groupByNetwork)
+                HStack {
+                    Text("Nginx directory")
+                    Spacer()
+                    TextField("/etc/nginx", text: $state.nginxDir).frame(width: 160)
+                        .textFieldStyle(.roundedBorder)
+                }
             }
             .padding(12)
         }
