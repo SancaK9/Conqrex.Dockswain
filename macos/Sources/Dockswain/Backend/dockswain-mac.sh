@@ -523,6 +523,30 @@ nginx-toggle)
     else emit_err "toggle_failed"; fi
     ;;
 
+# nginx-new: write a new server block (built in Swift, passed as base64) to the
+# right place — sites-available + symlink if that layout exists, else conf.d/*.conf.
+nginx-new)
+    NAME="${1:-}"; B64="${2:-}"
+    [ -n "$NAME" ] || emit_err "no_name"
+    case "$NAME" in *[!A-Za-z0-9._-]*|''|.|..) emit_err "bad_name";; esac
+    [ -n "$B64" ] || emit_err "no_content"
+    IFS= read -r -d '' remote <<REMOTE || true
+nd="$NGINX_DIR"
+content=\$(printf %s '$B64' | base64 -d)
+if ${SUDO:+$SUDO }test -d "\$nd/sites-available"; then
+  printf '%s\n' "\$content" | ${SUDO:+$SUDO }tee "\$nd/sites-available/$NAME" >/dev/null && \
+    ${SUDO:+$SUDO }ln -sf "\$nd/sites-available/$NAME" "\$nd/sites-enabled/$NAME" && echo OK
+else
+  ${SUDO:+$SUDO }mkdir -p "\$nd/conf.d" && \
+    printf '%s\n' "\$content" | ${SUDO:+$SUDO }tee "\$nd/conf.d/$NAME.conf" >/dev/null && echo OK
+fi
+REMOTE
+    ssh_exec "$remote"
+    if [ "$SSH_RC" -eq 0 ] && printf '%s' "$SSH_OUT" | grep -q OK; then printf '{"ok":true}\n'
+    elif echo "$SSH_OUT$SSH_ERR" | grep -qi 'permission denied'; then emit_err "permission"
+    else emit_err "create_failed"; fi
+    ;;
+
 nginx-test)
     ssh_exec "${SUDO:+$SUDO }nginx -t 2>&1"
     out=$(printf '%s' "$SSH_OUT$SSH_ERR" | jq -Rsc '.')

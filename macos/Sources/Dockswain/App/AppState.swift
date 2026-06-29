@@ -1,23 +1,23 @@
 import Foundation
 import SwiftUI
 import AppKit
+import Combine
 
-/// Single source of truth for the menubar UI: the server list, the selected
-/// server's containers, and the polling loop. Mirrors the role of ServerSession.qml
-/// in the Linux build, minus the per-tab plumbing (one active server at a time here).
+/// App-wide state: the configured servers, settings, and the set of *open* server
+/// tabs (ServerSessions). The container list / stats / status shown in the UI are a
+/// facade over the active tab, so the views keep reading `state.containers` etc.
 @MainActor
 final class AppState: ObservableObject {
     // Persisted config
     @Published var servers: [Server] = [] { didSet { persistServers() } }
-    @Published var selectedServerID: Server.ID? { didSet { onSelectionChange() } }
     @Published var dockerCmd: String = UserDefaults.standard.string(forKey: "dockerCmd") ?? "docker" {
-        didSet { UserDefaults.standard.set(dockerCmd, forKey: "dockerCmd"); backend.options.dockerCmd = dockerCmd }
+        didSet { UserDefaults.standard.set(dockerCmd, forKey: "dockerCmd"); sessions.forEach { $0.setDockerCmd(dockerCmd) } }
     }
     @Published var refreshInterval: Double = max(2, UserDefaults.standard.double(forKey: "refreshInterval")) {
-        didSet { UserDefaults.standard.set(refreshInterval, forKey: "refreshInterval"); restartPolling() }
+        didSet { UserDefaults.standard.set(refreshInterval, forKey: "refreshInterval"); sessions.forEach { $0.setRefreshInterval(refreshInterval) } }
     }
     @Published var statsEnabled: Bool = UserDefaults.standard.bool(forKey: "statsEnabled") {
-        didSet { UserDefaults.standard.set(statsEnabled, forKey: "statsEnabled"); if !statsEnabled { statsByID = [:] } }
+        didSet { UserDefaults.standard.set(statsEnabled, forKey: "statsEnabled"); applyStatsGating() }
     }
     @Published var groupByNetwork: Bool = UserDefaults.standard.bool(forKey: "groupByNetwork") {
         didSet { UserDefaults.standard.set(groupByNetwork, forKey: "groupByNetwork") }
@@ -35,44 +35,42 @@ final class AppState: ObservableObject {
         didSet { UserDefaults.standard.set(Array(pinned), forKey: "pinned") }
     }
 
-    // Live state
-    @Published var containers: [Container] = []
-    @Published var statsByID: [String: ContainerStat] = [:]
-    @Published var statusMessage: String = "No server selected."
-    @Published var isLoading = false
-    @Published var serverVersion: String = ""
+    // Open tabs
+    @Published var sessions: [ServerSession] = []
+    @Published var activeID: UUID? { didSet { onActiveChange() } }
 
-    private var backend = Backend()
-    private var pollTask: Task<Void, Never>?
+    private var sessionCancellables: [UUID: AnyCancellable] = [:]
 
-    var selectedServer: Server? {
-        servers.first { $0.id == selectedServerID }
+    var active: ServerSession? { sessions.first { $0.id == activeID } }
+    var selectedServer: Server? { active?.server }
+
+    // MARK: - Facade over the active session (views read these unchanged)
+
+    var containers: [Container] { active?.containers ?? [] }
+    var statsByID: [String: ContainerStat] { active?.statsByID ?? [:] }
+    var isLoading: Bool { active?.isLoading ?? false }
+    var serverVersion: String { active?.serverVersion ?? "" }
+    var statusMessage: String {
+        if sessions.isEmpty { return servers.isEmpty ? "No servers yet." : "No server open." }
+        return active?.statusMessage ?? ""
     }
+    var badge: String { active?.badge ?? "" }
 
-    /// Running / total badge for the menubar title.
-    var badge: String {
-        guard selectedServer != nil, !containers.isEmpty else { return "" }
-        let running = containers.filter(\.isRunning).count
-        return "\(running)/\(containers.count)"
-    }
+    /// Configured servers that aren't open yet (for the "+" menu).
+    var unopenedServers: [Server] { servers.filter { s in !sessions.contains { $0.id == s.id } } }
 
-    /// A configured Backend instance feature views can use directly.
     func makeBackend() -> Backend {
-        var b = Backend()
-        b.options.dockerCmd = dockerCmd
-        b.options.nginxDir = nginxDir
+        var b = Backend(); b.options.dockerCmd = dockerCmd; b.options.nginxDir = nginxDir
         return b
     }
 
     // MARK: - Filtering / grouping / pins
 
     func isPinned(_ c: Container) -> Bool { pinned.contains(c.name) }
-
     func togglePin(_ c: Container) {
         if pinned.contains(c.name) { pinned.remove(c.name) } else { pinned.insert(c.name) }
     }
 
-    /// Containers after search + running-only, sorted pinned → running → name.
     var displayedContainers: [Container] {
         let q = searchText.trimmingCharacters(in: .whitespaces).lowercased()
         return containers.filter { c in
@@ -91,22 +89,29 @@ final class AppState: ObservableObject {
 
     var hiddenCount: Int { containers.count - displayedContainers.count }
 
-    /// (network, containers) groups, used when groupByNetwork is on.
+    /// Swarm tasks sit on ingress + docker_gwbridge plus their app network, which
+    /// makes them jump between polls; group them under the app network instead so
+    /// they stay put. Only those two swarm-infra networks are skipped — a plain
+    /// container on `bridge`/`host` still groups under that.
+    private static let swarmInfra: Set<String> = ["ingress", "docker_gwbridge"]
+    private func appNetwork(_ networks: String) -> String {
+        let parts = networks.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+        if let app = parts.first(where: { !AppState.swarmInfra.contains($0) }) { return app }
+        return parts.first ?? "—"
+    }
+
     var networkGroups: [(network: String, items: [Container])] {
-        let items = displayedContainers
         var groups: [String: [Container]] = [:]
-        for c in items {
-            let net = c.networks.split(separator: ",").first.map(String.init) ?? "—"
-            groups[net.isEmpty ? "—" : net, default: []].append(c)
+        for c in displayedContainers {
+            groups[appNetwork(c.networks), default: []].append(c)
         }
         return groups.sorted { $0.key < $1.key }.map { ($0.key, $0.value) }
     }
 
     init() {
         loadServers()
-        backend.options.dockerCmd = dockerCmd
         if refreshInterval < 2 { refreshInterval = 5 }
-        selectedServerID = servers.first?.id
+        restoreOpenTabs()
     }
 
     // MARK: - Persistence
@@ -116,131 +121,111 @@ final class AppState: ObservableObject {
               let decoded = try? JSONDecoder().decode([Server].self, from: data) else { return }
         servers = decoded
     }
-
     private func persistServers() {
-        if let data = try? JSONEncoder().encode(servers) {
-            UserDefaults.standard.set(data, forKey: "servers")
-        }
+        if let data = try? JSONEncoder().encode(servers) { UserDefaults.standard.set(data, forKey: "servers") }
     }
+    private func persistOpenTabs() {
+        UserDefaults.standard.set(sessions.map { $0.id.uuidString }, forKey: "openTabs")
+        UserDefaults.standard.set(activeID?.uuidString, forKey: "activeTab")
+    }
+    private func restoreOpenTabs() {
+        let ids = (UserDefaults.standard.stringArray(forKey: "openTabs") ?? []).compactMap(UUID.init)
+        for id in ids { if let s = servers.first(where: { $0.id == id }) { open(s, makeActive: false, persist: false) } }
+        if sessions.isEmpty, let first = servers.first { open(first, makeActive: false, persist: false) }
+        let saved = UserDefaults.standard.string(forKey: "activeTab").flatMap(UUID.init)
+        activeID = (saved.flatMap { id in sessions.first { $0.id == id }?.id }) ?? sessions.first?.id
+        persistOpenTabs()
+    }
+
+    // MARK: - Tabs
+
+    func open(_ server: Server, makeActive: Bool = true, persist: Bool = true) {
+        if !sessions.contains(where: { $0.id == server.id }) {
+            let session = ServerSession(server: server, dockerCmd: dockerCmd,
+                                        nginxDir: nginxDir, refreshInterval: refreshInterval)
+            sessions.append(session)
+            sessionCancellables[session.id] = session.objectWillChange.sink { [weak self] in
+                self?.objectWillChange.send()
+            }
+            session.start()
+        }
+        if makeActive { activeID = server.id }
+        applyStatsGating()
+        if persist { persistOpenTabs() }
+    }
+
+    func closeTab(_ id: UUID) {
+        guard let idx = sessions.firstIndex(where: { $0.id == id }) else { return }
+        sessions[idx].stop()
+        sessionCancellables[id] = nil
+        sessions.remove(at: idx)
+        if activeID == id {
+            activeID = sessions.indices.contains(idx) ? sessions[idx].id : sessions.last?.id
+        }
+        applyStatsGating()
+        persistOpenTabs()
+    }
+
+    func setActive(_ id: UUID) { activeID = id }
+
+    private func onActiveChange() {
+        applyStatsGating()
+        persistOpenTabs()
+        objectWillChange.send()
+    }
+
+    /// Only the active tab fetches stats (and only when the setting is on).
+    private func applyStatsGating() {
+        for s in sessions { s.setStatsEnabled(statsEnabled && s.id == activeID) }
+        active?.refreshNow()
+    }
+
+    func refreshNow() { active?.refreshNow() }
 
     // MARK: - Server CRUD
 
-    func addServer(_ s: Server) {
-        servers.append(s)
-        if selectedServerID == nil { selectedServerID = s.id }
-    }
+    func addServer(_ s: Server) { servers.append(s) }
 
     func updateServer(_ s: Server) {
         guard let idx = servers.firstIndex(where: { $0.id == s.id }) else { return }
         servers[idx] = s
-        if s.id == selectedServerID { onSelectionChange() }
+        // if it's open, restart its session with the new settings
+        if sessions.contains(where: { $0.id == s.id }) {
+            let wasActive = activeID == s.id
+            closeTab(s.id)
+            open(s, makeActive: wasActive)
+        }
     }
 
     func removeServer(_ s: Server) {
         Keychain.delete(account: s.secretAccount)
+        if sessions.contains(where: { $0.id == s.id }) { closeTab(s.id) }
         servers.removeAll { $0.id == s.id }
-        if selectedServerID == s.id { selectedServerID = servers.first?.id }
     }
 
     func importFromSSHConfig() {
         Task {
-            guard let discovered = try? await backend.discoverSSHConfigHosts() else { return }
+            guard let discovered = try? await makeBackend().discoverSSHConfigHosts() else { return }
             for host in discovered {
                 let dup = servers.contains { $0.host == host.host && $0.port == host.port && $0.user == host.user }
                 if !dup { servers.append(host) }
             }
-            if selectedServerID == nil { selectedServerID = servers.first?.id }
+            if sessions.isEmpty, let first = servers.first { open(first) }
         }
     }
 
-    // MARK: - Selection + polling
+    // MARK: - Actions (delegate to the active session)
 
-    private func onSelectionChange() {
-        containers = []
-        statsByID = [:]
-        serverVersion = ""
-        statusMessage = selectedServer == nil ? "No server selected." : "Connecting…"
-        restartPolling()
-    }
-
-    private func restartPolling() {
-        pollTask?.cancel()
-        guard let server = selectedServer else { return }
-        pollTask = Task { [weak self] in
-            while !Task.isCancelled {
-                await self?.refresh(server)
-                try? await Task.sleep(nanoseconds: UInt64((self?.refreshInterval ?? 5) * 1_000_000_000))
-            }
-        }
-    }
-
-    func refreshNow() {
-        guard let server = selectedServer else { return }
-        Task { await refresh(server) }
-    }
-
-    private func refresh(_ server: Server) async {
-        // ignore if the selection changed under us mid-flight
-        guard server.id == selectedServerID else { return }
-        isLoading = true
-        defer { isLoading = false }
-        do {
-            let list = try await backend.list(server)
-            guard server.id == selectedServerID else { return }
-            containers = list.sorted { a, b in
-                if a.isRunning != b.isRunning { return a.isRunning }   // running first
-                return a.name.localizedCaseInsensitiveCompare(b.name) == .orderedAscending
-            }
-            statusMessage = ""
-            if serverVersion.isEmpty {
-                serverVersion = (try? await backend.probe(server)) ?? ""
-            }
-            if statsEnabled {
-                if let stats = try? await backend.stats(server), server.id == selectedServerID {
-                    var map: [String: ContainerStat] = [:]
-                    for st in stats { map[String(st.id.prefix(12))] = st }
-                    statsByID = map
-                }
-            }
-        } catch {
-            guard server.id == selectedServerID else { return }
-            containers = []
-            statusMessage = error.localizedDescription
-        }
-    }
-
-    // MARK: - Actions
-
-    func perform(_ act: String, on container: Container) {
-        guard let server = selectedServer else { return }
-        Task {
-            do {
-                try await backend.action(act, container: container.shortId, on: server)
-                await refresh(server)
-            } catch {
-                statusMessage = error.localizedDescription
-            }
-        }
-    }
-
-    func fetchLogs(_ container: Container) async -> String {
-        guard let server = selectedServer else { return "" }
-        do {
-            return try await backend.logs(container: container.shortId, tail: 400, on: server)
-        } catch {
-            return error.localizedDescription
-        }
-    }
+    func perform(_ act: String, on container: Container) { active?.perform(act, on: container) }
+    func fetchLogs(_ container: Container) async -> String { await active?.fetchLogs(container) ?? "" }
 
     func openExecTerminal(_ container: Container) {
         guard let server = selectedServer else { return }
         Task {
             do {
-                let argv = try await backend.execArgv(container: container.shortId, shell: "sh", on: server)
+                let argv = try await makeBackend().execArgv(container: container.shortId, shell: "sh", on: server)
                 openTerminal(command: "ssh", argv: argv)
-            } catch {
-                statusMessage = error.localizedDescription
-            }
+            } catch { /* surfaced via session status on next poll */ }
         }
     }
 
@@ -248,32 +233,21 @@ final class AppState: ObservableObject {
         guard let server = selectedServer else { return }
         Task {
             do {
-                let argv = try await backend.sshArgv(server)
+                let argv = try await makeBackend().sshArgv(server)
                 openTerminal(command: "ssh", argv: argv)
-            } catch {
-                statusMessage = error.localizedDescription
-            }
+            } catch { }
         }
     }
 
-    // MARK: - Connection test (used by Settings)
-
     func testConnection(_ s: Server) async -> Result<String, Error> {
         do {
-            let v = try await backend.probe(s)
+            let v = try await makeBackend().probe(s)
             return .success(v.isEmpty ? "Connected." : "Docker \(v)")
-        } catch {
-            return .failure(error)
-        }
+        } catch { return .failure(error) }
     }
 
     // MARK: - Terminal.app integration
 
-    /// Open Terminal.app running an interactive ssh command. The argv carries the
-    /// shared ControlPath options, so it reuses the warm master socket the poller
-    /// keeps authenticated — even a password server connects with no prompt and no
-    /// sshpass. (If the master ever expired, ssh just asks for the password in the
-    /// Terminal window, the normal way.)
     private func openTerminal(command: String, argv: [String]) {
         let full = ([command] + argv)
             .map { "'" + $0.replacingOccurrences(of: "'", with: "'\\''") + "'" }
@@ -281,13 +255,9 @@ final class AppState: ObservableObject {
         let script = "tell application \"Terminal\"\nactivate\ndo script \"" +
             full.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"") +
             "\"\nend tell"
-        runAppleScript(script)
-    }
-
-    private func runAppleScript(_ source: String) {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-        p.arguments = ["-e", source]
+        p.arguments = ["-e", script]
         try? p.run()
     }
 }

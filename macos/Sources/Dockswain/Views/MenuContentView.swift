@@ -39,6 +39,7 @@ struct MenuContentView: View {
     private var listScreen: some View {
         VStack(spacing: 0) {
             header
+            if !state.servers.isEmpty { tabBar }
             toolbar
             if !state.servers.isEmpty && state.selectedServer != nil { filterBar }
             Divider()
@@ -51,20 +52,8 @@ struct MenuContentView: View {
     private var header: some View {
         HStack(spacing: 8) {
             Image(systemName: "shippingbox.fill").foregroundStyle(.tint)
-            if state.servers.isEmpty {
-                Text("Dockswain").font(.headline)
-            } else {
-                Picker("", selection: Binding(
-                    get: { state.selectedServerID },
-                    set: { state.selectedServerID = $0 }
-                )) {
-                    ForEach(state.servers) { s in
-                        Text(s.label.isEmpty ? s.target : s.label).tag(Optional(s.id))
-                    }
-                }
-                .labelsHidden()
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
+            Text(state.selectedServer.map { $0.label.isEmpty ? $0.target : $0.label } ?? "Dockswain")
+                .font(.headline).lineLimit(1)
             Spacer()
             if state.isLoading { ProgressView().controlSize(.small) }
             Button { panel.togglePin() } label: {
@@ -78,6 +67,59 @@ struct MenuContentView: View {
                 .disabled(state.selectedServer == nil)
         }
         .padding(.horizontal, 10).padding(.top, 10).padding(.bottom, 6)
+    }
+
+    // MARK: - Tabs (one open server per tab)
+
+    private var tabBar: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 4) {
+                ForEach(state.sessions) { session in tabChip(session) }
+                addTabMenu
+            }
+            .padding(.horizontal, 8).padding(.bottom, 6)
+        }
+    }
+
+    private func tabChip(_ session: ServerSession) -> some View {
+        let isActive = state.activeID == session.id
+        let label = session.server.label.isEmpty ? session.server.target : session.server.label
+        return HStack(spacing: 4) {
+            Circle().fill(session.containers.contains { $0.isRunning } ? .green : .gray)
+                .frame(width: 6, height: 6)
+            Text(label).font(.caption).lineLimit(1)
+            if !session.badge.isEmpty {
+                Text(session.badge).font(.system(size: 9)).foregroundStyle(.secondary)
+            }
+            Button { state.closeTab(session.id) } label: {
+                Image(systemName: "xmark").font(.system(size: 8))
+            }.buttonStyle(.borderless).help("Close tab")
+        }
+        .padding(.horizontal, 8).padding(.vertical, 4)
+        .background(RoundedRectangle(cornerRadius: 6)
+            .fill(isActive ? Color.accentColor.opacity(0.2) : Color.primary.opacity(0.05)))
+        .overlay(RoundedRectangle(cornerRadius: 6)
+            .stroke(isActive ? Color.accentColor : .clear, lineWidth: 1))
+        .contentShape(Rectangle())
+        .onTapGesture { state.setActive(session.id) }
+    }
+
+    @ViewBuilder
+    private var addTabMenu: some View {
+        if state.unopenedServers.isEmpty {
+            EmptyView()
+        } else {
+            Menu {
+                ForEach(state.unopenedServers) { s in
+                    Button(s.label.isEmpty ? s.target : s.label) { state.open(s) }
+                }
+            } label: {
+                Image(systemName: "plus").font(.system(size: 10))
+                    .padding(.horizontal, 6).padding(.vertical, 4)
+            }
+            .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+            .help("Open another server in a new tab")
+        }
     }
 
     private var toolbar: some View {

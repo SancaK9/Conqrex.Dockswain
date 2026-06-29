@@ -135,6 +135,11 @@ extension Backend {
         try await okOrThrow(["nginx-toggle"] + sshArgs(s) + [act, fileName], on: s)
     }
 
+    func nginxNew(name: String, config: String, on s: Server) async throws {
+        let b64 = Data(config.utf8).base64EncodedString()
+        try await okOrThrow(["nginx-new"] + sshArgs(s) + [name, b64], on: s)
+    }
+
     /// Returns (pass, output).
     func nginxTest(_ s: Server) async throws -> (Bool, String) {
         let r = try await runReply(["nginx-test"] + sshArgs(s), env: env(s))

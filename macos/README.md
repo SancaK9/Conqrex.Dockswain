@@ -87,19 +87,26 @@ it reuses the same socket and returns in milliseconds.
 
 ## Features
 
+- **Multiple servers as tabs:** open several configured servers at once, each its
+  own live connection; switch instantly, "+" opens another, "×" closes one. Open
+  tabs persist across restarts (only the active tab fetches CPU/mem stats).
 - **Containers:** live list with start/stop/restart/remove, **filter bar** (search +
-  running-only), **group by network**, **pin to top**, auto-following **logs**, exec a
+  running-only), **group by network** (swarm tasks grouped under their app network,
+  not ingress/docker_gwbridge), **pin to top**, auto-following **logs**, exec a
   shell (Terminal.app), and a running/total menu-bar badge.
 - **Live CPU/memory stats** (optional, off by default — `docker stats` is slower).
 - **Compose projects:** `docker compose` up/down and a peek at the compose file.
 - **Disk & cleanup:** docker data-root usage bar, `docker system df` breakdown, safe
   one-click prunes (build cache / dangling images / stopped containers, each
   confirmed), and per-container log sizes with a truncate button.
-- **File manager (SFTP):** Local ↔ Remote panes, navigate/mkdir/rename/delete, and
-  upload/download that reuses the warm SSH master (scp, no second password). Local
-  listing is native; remote is over SSH.
+- **File manager (SFTP):** dual-pane — **side by side** (Local | Remote with transfer
+  arrows) when the panel is wide, a Local/Remote toggle when narrow.
+  navigate/mkdir/rename/delete, and upload/download that reuses the warm SSH master
+  (scp, no second password). Local listing is native; remote is over SSH.
 - **Nginx:** browse `/etc/nginx` sites, enable/disable, view/**edit** a config inline
-  (written back over SSH), run `nginx -t`, and reload.
+  (written back over SSH), run `nginx -t`, reload, and **create a new site** — a
+  reverse proxy (with the WebSocket upgrade headers) or a static site — with an
+  optional jump straight to Get SSL.
 - **Certbot SSL:** list certificates and issue a new one with `certbot --nginx`
   (optional HTTP→HTTPS redirect).
 - **Servers:** add by hand or import from `~/.ssh/config`; passwords in the Keychain.

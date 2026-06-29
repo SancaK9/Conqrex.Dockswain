@@ -13,18 +13,25 @@ struct NginxView: View {
     @State private var testResult: (pass: Bool, text: String)?
     @State private var editing: NginxSite?
     @State private var editText = ""
+    @State private var creating = false
     @State private var busy = false
 
     var body: some View {
         VStack(spacing: 0) {
             FeatureHeader(title: "Nginx", trailing: AnyView(HStack(spacing: 10) {
+                Button { creating = true } label: { Image(systemName: "plus") }
+                    .buttonStyle(.borderless).help("New website")
                 Button { openCertbot() } label: { Image(systemName: "lock.shield") }
                     .buttonStyle(.borderless).help("SSL certificates (certbot)")
                 Button { Task { await load() } } label: { Image(systemName: "arrow.clockwise") }
                     .buttonStyle(.borderless)
             }), onBack: onBack)
 
-            if let editing { editor(editing) }
+            if creating {
+                NewSiteForm(onCancel: { creating = false }, onCreated: {
+                    creating = false; openCertbot()
+                }, onDone: { creating = false; Task { await load() } })
+            } else if let editing { editor(editing) }
             else { browser }
         }
         .task { await load() }
@@ -126,5 +133,107 @@ struct NginxView: View {
         guard let srv = state.selectedServer else { return }
         do { try await state.makeBackend().writeFile(s.path, content: editText, on: srv); editing = nil; await load() }
         catch { testResult = (false, error.localizedDescription) }
+    }
+}
+
+/// Generate and create a new nginx server block: a reverse proxy (proxy_pass with
+/// the WebSocket upgrade headers) or a static site (root + try_files).
+private struct NewSiteForm: View {
+    let onCancel: () -> Void
+    let onCreated: () -> Void      // created, then jump to certbot (Get SSL)
+    let onDone: () -> Void         // created, stay in nginx
+    @EnvironmentObject var state: AppState
+
+    enum Kind: String, CaseIterable { case proxy = "Reverse proxy", staticSite = "Static site" }
+    @State private var name = ""
+    @State private var serverName = ""
+    @State private var kind: Kind = .proxy
+    @State private var proxyTarget = "http://127.0.0.1:3000"
+    @State private var root = "/var/www/html"
+    @State private var busy = false
+    @State private var error: String?
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 10) {
+                field("File name", $name, "example.com")
+                field("server_name", $serverName, "example.com www.example.com")
+                Picker("Type", selection: $kind) {
+                    ForEach(Kind.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                }.pickerStyle(.segmented)
+                if kind == .proxy { field("proxy_pass", $proxyTarget, "http://127.0.0.1:3000") }
+                else { field("root", $root, "/var/www/html") }
+
+                if let error { Text(error).font(.caption).foregroundStyle(.red) }
+
+                HStack {
+                    if busy { ProgressView().controlSize(.small) }
+                    Spacer()
+                    Button("Cancel", action: onCancel)
+                    Button("Create") { create(thenSSL: false) }.disabled(invalid)
+                    Button("Create + Get SSL") { create(thenSSL: true) }.disabled(invalid)
+                        .keyboardShortcut(.defaultAction)
+                }.padding(.top, 4)
+
+                Text("Written to sites-available + symlink, or conf.d/*.conf. Run Test + Reload after.")
+                    .font(.caption2).foregroundStyle(.secondary)
+            }.padding(12)
+        }
+    }
+
+    private var invalid: Bool {
+        name.trimmingCharacters(in: .whitespaces).isEmpty || serverName.trimmingCharacters(in: .whitespaces).isEmpty
+    }
+
+    private func config() -> String {
+        let sn = serverName.trimmingCharacters(in: .whitespaces)
+        if kind == .proxy {
+            return """
+            server {
+                listen 80;
+                server_name \(sn);
+                location / {
+                    proxy_pass \(proxyTarget.trimmingCharacters(in: .whitespaces));
+                    proxy_http_version 1.1;
+                    proxy_set_header Host $host;
+                    proxy_set_header X-Real-IP $remote_addr;
+                    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                    proxy_set_header X-Forwarded-Proto $scheme;
+                    proxy_set_header Upgrade $http_upgrade;
+                    proxy_set_header Connection "upgrade";
+                }
+            }
+            """
+        } else {
+            return """
+            server {
+                listen 80;
+                server_name \(sn);
+                root \(root.trimmingCharacters(in: .whitespaces));
+                index index.html;
+                location / { try_files $uri $uri/ =404; }
+            }
+            """
+        }
+    }
+
+    private func create(thenSSL: Bool) {
+        guard let srv = state.selectedServer else { return }
+        busy = true; error = nil
+        Task {
+            defer { busy = false }
+            do {
+                try await state.makeBackend().nginxNew(name: name.trimmingCharacters(in: .whitespaces),
+                                                       config: config(), on: srv)
+                thenSSL ? onCreated() : onDone()
+            } catch { self.error = error.localizedDescription }
+        }
+    }
+
+    private func field(_ label: String, _ text: Binding<String>, _ placeholder: String) -> some View {
+        HStack {
+            Text(label).font(.caption).frame(width: 90, alignment: .leading)
+            TextField(placeholder, text: text).textFieldStyle(.roundedBorder)
+        }
     }
 }
