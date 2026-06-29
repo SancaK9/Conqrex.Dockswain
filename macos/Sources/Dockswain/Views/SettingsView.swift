@@ -165,6 +165,11 @@ private struct ServerForm: View {
                         .font(.caption2).foregroundStyle(.secondary)
                 }
 
+                Toggle("Use sudo for nginx, certbot & config edits", isOn: $server.useSudo)
+                    .font(.caption)
+                Text("Runs privileged commands via sudo -n. Needs NOPASSWD sudo on the server. Leave off if you connect as root.")
+                    .font(.caption2).foregroundStyle(.secondary)
+
                 if let testResult {
                     Text(testResult).font(.caption)
                         .foregroundStyle(testResult.hasPrefix("✓") ? .green : .red)

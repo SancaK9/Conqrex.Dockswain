@@ -155,12 +155,19 @@ add the widget the usual way: right-click the panel or desktop → Add Widgets �
     creating the web root with a placeholder `index.html`). It gets written to the
     right place for your layout (`sites-available` + symlink, or `conf.d/*.conf`), and
     you can Test and Reload from the same form.
+  - **conf.d snippets**: below the sites you get the shared include files under
+    `conf.d` — the upstreams, maps and anything else that isn't a server block. Add a
+    new one (it opens straight in your editor), view or edit the existing ones, flip
+    them on/off (a disabled file is parked as `*.disabled` so nginx skips it), or delete
+    them. Run Test and Reload afterwards, same as for sites.
   - **SSL with certbot** (the lock button on a site, or Get SSL right after creating
     one): grabs and installs a Let's Encrypt certificate with `certbot --nginx` for the
     site's domains, with an optional HTTP→HTTPS redirect. No email is registered
     (`--register-unsafely-without-email`) and certbot reloads nginx itself on success.
     A Certificates list shows each cert's domains and expiry date (read from `certbot
-    certificates`). You'll need `certbot` and its nginx plugin on the server.
+    certificates`). You'll need `certbot` and its nginx plugin on the server, the
+    domain's DNS pointing at it, and port 80 reachable — those are what trip up an
+    issue, not the command itself.
 - **File manager** (the folder button): a dual-pane SFTP browser, your local machine
   on one side and the remote server on the other, Dolphin-style rows with mime icons,
   size and modified date. It piggybacks on the widget's warm SSH connection, so again
@@ -190,12 +197,21 @@ add the widget the usual way: right-click the panel or desktop → Add Widgets �
 > Remote editing reuses the SSH connection you already have open (the one your stored
 > password opened). It pulls the file into a temp copy, opens it in your editor, and
 > writes it back over SSH on every save and on close. No second password prompt.
-> Connecting as root edits `/etc/nginx/*` in place.
+>
+> Touching `/etc/nginx/*` and running `certbot` need root. Connect as root and it just
+> works; otherwise turn on **Use sudo** for that server (Settings → Servers) and the
+> nginx, certbot and config-edit commands run through `sudo -n`. Because there's no
+> terminal to type a password into, `sudo -n` needs a NOPASSWD rule for those tools — if
+> it's missing you get a clear "sudo needs a password" message instead of a silent
+> failure. (This is also why a `certbot` that works by hand can do nothing from the
+> widget: by hand you typed the sudo password, here nothing can.)
 
 ## Settings
 
-- **Servers** — add/remove servers (label, `user@host`, port, key or password auth),
-  or Import from Remmina / Import from FileZilla. (FileZilla import is SFTP sites only;
+- **Servers** — add/remove servers (label, `user@host`, port, key or password auth,
+  and a **Use sudo** toggle that runs the privileged nginx/certbot/config commands
+  through `sudo -n` — leave it off when you log in as root), or Import from Remmina /
+  Import from FileZilla. (FileZilla import is SFTP sites only;
   plain FTP sites are skipped since the widget talks SSH. Imported password sites get
   their saved password copied into your keyring so they work right away.)
 - **General** — refresh interval, stats on/off and its interval, the docker command

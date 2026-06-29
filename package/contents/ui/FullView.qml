@@ -28,6 +28,8 @@ Item {
     property string nginxResult: ""
     property var nginxCertsData: []
     property bool certbotAvailable: true
+    property string confdDir: ""
+    property string confdNewError: ""
     property string siteFormResult: ""
     property bool siteCreated: false
     property string lastCreatedDomains: ""
@@ -77,7 +79,18 @@ Item {
     }
 
     // ---- nginx ----
-    function openNginx() { nginxResult = ""; nginxOverlay.visible = true; loadNginx(); loadCerts(); }
+    function openNginx() { nginxResult = ""; nginxOverlay.visible = true; loadNginx(); loadConfd(); loadCerts(); }
+    function loadConfd() {
+        ctrl.nginxConfd(function (d) {
+            nginxConfdModel.clear();
+            fullView.confdDir = (d && d.dir) ? d.dir
+                              : ((fullView.nginxData ? fullView.nginxData.base : "/etc/nginx") + "/conf.d");
+            if (d && d.ok) (d.files || []).forEach(function (f) {
+                nginxConfdModel.append({ cname: f.name, cpath: f.path,
+                                         cenabled: !!f.enabled, csize: (f.size || 0) });
+            });
+        });
+    }
     function loadNginx() {
         ctrl.nginxInfo(function (d) {
             fullView.nginxData = d;
@@ -99,6 +112,38 @@ Item {
         if (nginxData && nginxData.style === "confd")
             return base + "/conf.d/" + (enabled ? name : name + ".disabled");
         return base + "/sites-available/" + name;
+    }
+
+    // ---- conf.d helpers ----
+    // Map a failed conf.d reply to an actionable message, falling back to `fallback`.
+    function confdReason(r, fallback) {
+        if (!r) return fallback;
+        switch (r.reason) {
+        case "exists":        return i18n("A file with that name already exists.");
+        case "twin_exists":   return i18n("The opposite (enabled/disabled) twin already exists — resolve it on the server.");
+        case "sudo_password": return i18n("sudo needs a password. Connect as root or add a NOPASSWD rule.");
+        case "permission":    return i18n("Permission denied — enable “Use sudo” for this server, or connect as root.");
+        default:              return fallback;
+        }
+    }
+
+    function doCreateConfd() {
+        var name = ("" + confdNewName.text).trim();
+        if (name === "") { fullView.confdNewError = i18n("Enter a file name."); return; }
+        if (name === "." || name === ".." || !/^[A-Za-z0-9._-]+$/.test(name)) {
+            fullView.confdNewError = i18n("Use only letters, digits, dot, dash and underscore."); return;
+        }
+        fullView.confdNewError = "";
+        ctrl.nginxConfdNew(name, function (r) {
+            if (r && r.ok && r.path) {
+                confdNewOverlay.visible = false;
+                fullView.loadConfd();
+                ctrl.openInKate(r.path);     // open the freshly-created file for editing
+                fullView.nginxResult = i18n("Created %1 — edit it, then Test & Reload.", r.path);
+            } else {
+                fullView.confdNewError = fullView.confdReason(r, i18n("Could not create the file."));
+            }
+        });
     }
 
     // ---- create site form ----
@@ -723,6 +768,7 @@ Item {
         radius: Kirigami.Units.smallSpacing
 
         ListModel { id: nginxModel }
+        ListModel { id: nginxConfdModel }
 
         ColumnLayout {
             anchors.fill: parent
@@ -744,7 +790,7 @@ Item {
                     PlasmaComponents.ToolTip { text: i18n("Create a new nginx website config") }
                 }
                 PlasmaComponents.ToolButton {
-                    icon.name: "view-refresh"; onClicked: { fullView.loadNginx(); fullView.loadCerts(); }
+                    icon.name: "view-refresh"; onClicked: { fullView.loadNginx(); fullView.loadConfd(); fullView.loadCerts(); }
                     PlasmaComponents.ToolTip { text: i18n("Reload list") }
                 }
                 PlasmaComponents.ToolButton {
@@ -845,6 +891,73 @@ Item {
                 }
             }
 
+            // ---- conf.d snippets (upstreams, maps, … — non-site include files) ----
+            Kirigami.Separator { Layout.fillWidth: true }
+            RowLayout {
+                Layout.fillWidth: true
+                PlasmaComponents.Label {
+                    text: i18n("conf.d"); opacity: 0.7; font: Kirigami.Theme.smallFont; Layout.fillWidth: true
+                }
+                QQC2.Button {
+                    text: i18n("New file"); icon.name: "list-add"
+                    onClicked: { confdNewName.text = ""; fullView.confdNewError = ""; confdNewOverlay.visible = true; }
+                    PlasmaComponents.ToolTip { text: i18n("Create a new conf.d include file (upstream, map, …)") }
+                }
+            }
+            PlasmaComponents.Label {
+                visible: nginxConfdModel.count === 0
+                text: i18n("No conf.d files."); opacity: 0.5; font: Kirigami.Theme.smallFont
+            }
+            PlasmaComponents.ScrollView {
+                Layout.fillWidth: true
+                Layout.preferredHeight: Math.min(Math.max(nginxConfdModel.count, 1), 4) * Kirigami.Units.gridUnit * 2.0
+                visible: nginxConfdModel.count > 0
+                ListView {
+                    model: nginxConfdModel
+                    clip: true
+                    delegate: RowLayout {
+                        width: ListView.view.width
+                        spacing: Kirigami.Units.smallSpacing
+                        QQC2.Switch {
+                            checked: model.cenabled
+                            onToggled: ctrl.nginxConfdToggle(checked ? "enable" : "disable", model.cname,
+                                          function (r) { fullView.nginxResult = r && r.ok
+                                              ? i18n("%1 %2 — Test & Reload to apply", model.cname, (checked ? i18n("enabled") : i18n("disabled")))
+                                              : fullView.confdReason(r, i18n("Failed to change %1", model.cname));
+                                              fullView.loadConfd(); })
+                        }
+                        PlasmaComponents.Label {
+                            text: model.cname; elide: Text.ElideRight; Layout.fillWidth: true
+                            font.family: "monospace"; opacity: model.cenabled ? 1.0 : 0.6
+                        }
+                        PlasmaComponents.Label {
+                            text: Fmt.fmtBytes(model.csize); font: Kirigami.Theme.smallFont; opacity: 0.55
+                        }
+                        PlasmaComponents.ToolButton {
+                            icon.name: "document-preview"
+                            onClicked: fullView.showFile(model.cpath)
+                            PlasmaComponents.ToolTip { text: i18n("View") }
+                        }
+                        PlasmaComponents.ToolButton {
+                            icon.name: "document-edit"
+                            onClicked: ctrl.openInKate(model.cpath)
+                            PlasmaComponents.ToolTip { text: i18n("Edit in Kate") }
+                        }
+                        PlasmaComponents.ToolButton {
+                            icon.name: "edit-delete"
+                            onClicked: fullView.confirm(i18n("Delete %1 from conf.d?", model.cname), function () {
+                                ctrl.nginxConfdDelete(model.cname, function (r) {
+                                    fullView.nginxResult = r && r.ok ? i18n("Deleted %1 — Test & Reload to apply", model.cname)
+                                                                     : fullView.confdReason(r, i18n("Failed to delete %1", model.cname));
+                                    fullView.loadConfd();
+                                });
+                            })
+                            PlasmaComponents.ToolTip { text: i18n("Delete") }
+                        }
+                    }
+                }
+            }
+
             // ---- certificates (expiry) ----
             Kirigami.Separator { Layout.fillWidth: true; visible: fullView.nginxCertsData.length > 0 }
             PlasmaComponents.Label {
@@ -916,6 +1029,61 @@ Item {
                     onClicked: fullView.confirm(i18n("Reload nginx now?"),
                                   function () { ctrl.nginxReload(function (r) { fullView.nginxResult = (r ? r.output : "") || (r && r.ok ? i18n("Reloaded") : i18n("reload failed")); }); })
                 }
+            }
+        }
+    }
+
+    // ==================== new conf.d file ====================
+    Rectangle {
+        id: confdNewOverlay
+        anchors.fill: parent
+        visible: false
+        color: Kirigami.Theme.backgroundColor
+        radius: Kirigami.Units.smallSpacing
+
+        ColumnLayout {
+            anchors.fill: parent
+            anchors.margins: Kirigami.Units.smallSpacing
+            spacing: Kirigami.Units.smallSpacing
+
+            RowLayout {
+                Layout.fillWidth: true
+                Kirigami.Heading { level: 5; text: i18n("New conf.d file"); Layout.fillWidth: true }
+                PlasmaComponents.ToolButton {
+                    icon.name: "dialog-close"; onClicked: confdNewOverlay.visible = false
+                    PlasmaComponents.ToolTip { text: i18n("Close") }
+                }
+            }
+            Kirigami.Separator { Layout.fillWidth: true }
+
+            PlasmaComponents.Label { text: i18n("File name"); font: Kirigami.Theme.smallFont; opacity: 0.7 }
+            QQC2.TextField {
+                id: confdNewName
+                Layout.fillWidth: true
+                placeholderText: i18n("upstream.conf")
+                onAccepted: fullView.doCreateConfd()
+            }
+            PlasmaComponents.Label {
+                Layout.fillWidth: true; wrapMode: Text.WordWrap
+                font: Kirigami.Theme.smallFont; opacity: 0.7
+                text: i18n("Saved under %1/. “.conf” is added if you omit an extension. Opens in the editor.",
+                           (fullView.confdDir || ((fullView.nginxData ? fullView.nginxData.base : "/etc/nginx") + "/conf.d")))
+            }
+            PlasmaComponents.Label {
+                Layout.fillWidth: true; wrapMode: Text.WordWrap
+                visible: fullView.confdNewError !== ""
+                color: Kirigami.Theme.negativeTextColor
+                font: Kirigami.Theme.smallFont
+                text: fullView.confdNewError
+            }
+            Item { Layout.fillHeight: true }
+
+            Kirigami.Separator { Layout.fillWidth: true }
+            RowLayout {
+                Layout.fillWidth: true
+                Item { Layout.fillWidth: true }
+                QQC2.Button { text: i18n("Cancel"); icon.name: "dialog-cancel"; onClicked: confdNewOverlay.visible = false }
+                QQC2.Button { text: i18n("Create & edit"); icon.name: "list-add"; onClicked: fullView.doCreateConfd() }
             }
         }
     }

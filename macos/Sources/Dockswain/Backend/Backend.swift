@@ -123,6 +123,7 @@ struct Backend {
         e["CNQ_NGINX_DIR"] = options.nginxDir
         if let s {
             e["CNQ_AUTH"] = s.auth.rawValue
+            e["CNQ_SUDO"] = s.useSudo ? "1" : "0"
             if s.auth == .password {
                 e["SSHPASS"] = Keychain.get(account: s.secretAccount) ?? ""
             }
@@ -197,6 +198,14 @@ struct Backend {
         case "docker_down": return "Docker daemon is not running on the server."
         case "docker_permission": return "The SSH user can't talk to the Docker socket (try the docker group or sudo docker)."
         case "docker_missing": return "docker is not installed (or not in PATH) on the server."
+        case "sudo_password": return "sudo needs a password on this server. Connect as root, or add a NOPASSWD rule for nginx/certbot (passwords can't be typed over this connection)."
+        case "permission": return "Permission denied. Enable “Use sudo” for this server, or connect as root."
+        case "no_nginx_dir": return "No nginx config directory found on the server."
+        case "conflict": return "A file with the opposite (enabled/disabled) state already exists — resolve it on the server first."
+        case "bad_name": return "Invalid file name."
+        case "create_failed", "write_failed": return "Could not write the file on the server."
+        case "delete_failed": return "Could not delete the file on the server."
+        case "toggle_failed": return "Could not enable/disable the file on the server."
         case "dns": return "Host could not be resolved."
         case "refused": return "Connection refused."
         case "timeout": return "Connection timed out."

@@ -46,6 +46,7 @@ Item {
         p += "CNQ_AUTH=" + ((server && server.auth) ? server.auth : "key") + " ";
         p += "CNQ_NGINX_DIR=" + shq(Plasmoid.configuration.nginxDir || "/etc/nginx") + " ";
         p += "CNQ_EDITOR=" + shq(Plasmoid.configuration.editor || "kate") + " ";
+        if (server && server.useSudo) p += "CNQ_SUDO=1 ";
         var st = Plasmoid.configuration.sftpTool;
         if (st && st !== "auto") p += "CNQ_SFTP_TOOL=" + shq(st) + " ";
         return p;
@@ -311,6 +312,28 @@ Item {
     function nginxCerts(cb) {
         engine.run(helperCmd("nginx-certs"), function (out) {
             try { cb(JSON.parse(out.trim())); } catch (e) { cb({ ok: false, certbot: true, certs: [] }); }
+        });
+    }
+    // --- conf.d snippets (upstreams, maps, ... — the non-site include files) ---
+    function nginxConfd(cb) {
+        engine.run(helperCmd("nginx-confd"), function (out) {
+            try { cb(JSON.parse(out.trim())); } catch (e) { cb({ ok: false, reason: "parse_error" }); }
+        });
+    }
+    function nginxConfdToggle(act, name, cb) {
+        engine.run(helperCmd("nginx-confd-toggle", act + " " + shq(name)), function (out) {
+            try { cb(JSON.parse(out.trim())); } catch (e) { cb({ ok: false, reason: "parse_error" }); }
+        });
+    }
+    function nginxConfdDelete(name, cb) {
+        engine.run(helperCmd("nginx-confd-del", shq(name)), function (out) {
+            try { cb(JSON.parse(out.trim())); } catch (e) { cb({ ok: false, reason: "parse_error" }); }
+        });
+    }
+    // create a new (templated) conf.d file; cb gets {ok, path} so the caller can open it
+    function nginxConfdNew(name, cb) {
+        engine.run(helperCmd("nginx-confd-new", shq(name)), function (out) {
+            try { cb(JSON.parse(out.trim())); } catch (e) { cb({ ok: false, reason: "parse_error" }); }
         });
     }
 

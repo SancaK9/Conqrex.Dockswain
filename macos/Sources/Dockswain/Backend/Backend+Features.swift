@@ -150,6 +150,23 @@ extension Backend {
         try await okOrThrow(["nginx-reload"] + sshArgs(s), on: s)
     }
 
+    // MARK: - Nginx conf.d snippets
+
+    func nginxConfd(_ s: Server) async throws -> (dir: String, files: [ConfdFile]) {
+        let out = try await runRaw(["nginx-confd-list"] + sshArgs(s), env: env(s))
+        let dir = (try? decodeField(out, key: "dir", as: String.self)) ?? "\(options.nginxDir)/conf.d"
+        let files = try decodeField(out, key: "files", as: [ConfdFile].self)
+        return (dir, files)
+    }
+
+    func nginxConfdToggle(_ act: String, name: String, on s: Server) async throws {
+        try await okOrThrow(["nginx-confd-toggle"] + sshArgs(s) + [act, name], on: s)
+    }
+
+    func nginxConfdDelete(_ name: String, on s: Server) async throws {
+        try await okOrThrow(["nginx-confd-del"] + sshArgs(s) + [name], on: s)
+    }
+
     // MARK: - Certbot
 
     func certbotList(_ s: Server) async throws -> [Cert] {

@@ -74,6 +74,16 @@ struct NginxSite: Identifiable, Decodable, Equatable {
     var fileName: String { name }
 }
 
+// MARK: - Nginx conf.d snippets (upstreams, maps, ... — non-site include files)
+
+struct ConfdFile: Identifiable, Decodable, Equatable {
+    let name: String      // basename (enabled name, e.g. "foo.conf"; .disabled stripped)
+    let path: String      // full path on the server
+    let enabled: Bool     // false = stored as <name>.disabled
+    let size: Int64
+    var id: String { path }
+}
+
 // MARK: - Certbot
 
 struct Cert: Identifiable, Decodable, Equatable {

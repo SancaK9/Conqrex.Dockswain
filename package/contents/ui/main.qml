@@ -169,6 +169,13 @@ PlasmoidItem {
     function nginxTest(cb)         { if (activeSession) activeSession.nginxTest(cb); }
     function nginxReload(cb)       { if (activeSession) activeSession.nginxReload(cb); }
     function nginxSite(a, n, cb)   { if (activeSession) activeSession.nginxSite(a, n, cb); }
+    function nginxCreate(n, d, t, tg, e, m, cb) { if (activeSession) activeSession.nginxCreate(n, d, t, tg, e, m, cb); }
+    function nginxCertbot(d, r, cb){ if (activeSession) activeSession.nginxCertbot(d, r, cb); }
+    function nginxCerts(cb)        { if (activeSession) activeSession.nginxCerts(cb); }
+    function nginxConfd(cb)        { if (activeSession) activeSession.nginxConfd(cb); else noSession(cb); }
+    function nginxConfdToggle(a, n, cb) { if (activeSession) activeSession.nginxConfdToggle(a, n, cb); else noSession(cb); }
+    function nginxConfdDelete(n, cb)    { if (activeSession) activeSession.nginxConfdDelete(n, cb); else noSession(cb); }
+    function nginxConfdNew(n, cb)       { if (activeSession) activeSession.nginxConfdNew(n, cb); else noSession(cb); }
     function openShell()           { if (activeSession) activeSession.openShell(); }
     function openExec(id, n)       { if (activeSession) activeSession.openExec(id, n); }
     function followLogs(id, n)     { if (activeSession) activeSession.followLogs(id, n); }

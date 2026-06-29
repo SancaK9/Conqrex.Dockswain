@@ -44,13 +44,20 @@ if [ -z "$RT" ]; then
     chmod 700 "$RT" 2>/dev/null      # tighten if it pre-existed (ours) with looser perms
 fi
 DOCKER="${CNQ_DOCKER_CMD:-docker}"
-# When docker is driven through sudo, mirror that for the plain filesystem reads/writes
-# on container log files (root-owned under the docker data root). sudo -n never prompts,
-# so a missing NOPASSWD rule fails fast instead of hanging (BatchMode philosophy). With a
-# bare `docker` we run unprivileged: works when the SSH user is root, else sizes show as
-# unreadable and truncate reports a permission error.
-case "$DOCKER" in "sudo "*|sudo) SUDO="sudo -n" ;; *) SUDO="" ;; esac
+# Privileged filesystem reads/writes (container log files, /etc/nginx, certbot) run through
+# sudo when EITHER the per-server "use sudo" toggle is on (CNQ_SUDO=1) or the docker command
+# is driven via sudo. sudo -n never prompts, so a missing NOPASSWD rule fails fast instead of
+# hanging (BatchMode philosophy). With neither, we run as the bare SSH user: works when that
+# user is root, else reads come back unreadable and writes report a permission error.
+case "$DOCKER" in "sudo "*|sudo) docker_sudo=1 ;; *) docker_sudo=0 ;; esac
+if [ "${CNQ_SUDO:-0}" = "1" ] || [ "$docker_sudo" = "1" ]; then SUDO="sudo -n"; else SUDO=""; fi
 NGINX_DIR="${CNQ_NGINX_DIR:-/etc/nginx}"
+
+# Did a command fail because sudo wanted a password (no NOPASSWD, no TTY)? Used to turn a
+# generic failure into an actionable reason in the nginx/certbot/file paths.
+is_sudo_password_error() {
+    [ -n "$SUDO" ] && printf '%s' "$1" | grep -qiE 'sudo:.*(password is required|terminal is required|no tty|askpass)|must have a tty to run sudo'
+}
 
 # escape a value so it can be embedded inside single quotes in a remote script: each
 # ' becomes the POSIX sequence  '\''  (close-quote, escaped-quote, reopen-quote). The
@@ -627,7 +634,10 @@ __edit-run)
     tmp=$(mktemp -d 2>/dev/null) || exit 0
     f="$tmp/$(basename "$P")"
     pesc=$(rsq "$P")
-    "${SSH[@]}" "cat -- '$pesc'" > "$f" 2>/dev/null || { rm -rf "$tmp"; exit 0; }
+    # Read/write-back honor the per-server sudo toggle so root-owned configs (e.g. under
+    # /etc/nginx) round-trip. Writes go through `tee` because a `> file` redirect is the
+    # local shell's, not sudo's, and so could not create/overwrite a root-owned file.
+    "${SSH[@]}" "${SUDO:+$SUDO }cat -- '$pesc'" > "$f" 2>/dev/null || { rm -rf "$tmp"; exit 0; }
     sig=$(cksum < "$f" 2>/dev/null)   # content signature (mtime is too coarse)
     # background watcher: push the temp back whenever its content changes (on save)
     (
@@ -636,7 +646,7 @@ __edit-run)
             cur=$(cksum < "$f" 2>/dev/null)
             if [ "$cur" != "$sig" ]; then
                 sig="$cur"
-                "${SSH[@]}" "cat > '$pesc'" < "$f" 2>/dev/null
+                "${SSH[@]}" "${SUDO:+$SUDO }tee -- '$pesc' >/dev/null" < "$f" 2>/dev/null
             fi
         done
     ) &
@@ -649,7 +659,7 @@ __edit-run)
     kill "$watcher" 2>/dev/null
     # final flush if content changed since the last push
     cur=$(cksum < "$f" 2>/dev/null)
-    [ "$cur" != "$sig" ] && "${SSH[@]}" "cat > '$pesc'" < "$f" 2>/dev/null
+    [ "$cur" != "$sig" ] && "${SSH[@]}" "${SUDO:+$SUDO }tee -- '$pesc' >/dev/null" < "$f" 2>/dev/null
     rm -rf "$tmp"
     exit 0
     ;;
@@ -657,9 +667,10 @@ __edit-run)
 readfile)
     P="${1:-}"; [ -n "$P" ] || emit_err "no_path"
     pesc=$(rsq "$P")
-    ssh_exec "cat -- '$pesc'"
+    ssh_exec "${SUDO:+$SUDO }cat -- '$pesc'"
     if [ "$SSH_RC" -ne 0 ]; then
-        if   echo "$SSH_ERR" | grep -qi 'no such file';   then emit_err "not_found"
+        if   is_sudo_password_error "$SSH_ERR";              then emit_err "sudo_password"
+        elif echo "$SSH_ERR" | grep -qi 'no such file';   then emit_err "not_found"
         elif echo "$SSH_ERR" | grep -qi 'permission denied'; then emit_err "permission"
         else emit_err "$(classify)"; fi
     fi
@@ -935,39 +946,39 @@ xfer-clear)
     ;;
 
 nginx-info)
-    B=$(rsq "$NGINX_DIR")
+    B=$(rsq "$NGINX_DIR"); SU="${SUDO:+$SUDO }"
     remote=$(cat <<REMOTE
 base='$B'
 conf="\$base/nginx.conf"
 style=confd
-if [ -f "\$conf" ] && grep -qE 'sites-enabled' "\$conf" 2>/dev/null; then style=sites
-elif [ -d "\$base/sites-available" ]; then style=sites; fi
+if ${SU}test -f "\$conf" && ${SU}grep -qE 'sites-enabled' "\$conf" 2>/dev/null; then style=sites
+elif ${SU}test -d "\$base/sites-available"; then style=sites; fi
 printf 'style=%s\n' "\$style"
-printf 'conf=%s\n' "\$([ -f "\$conf" ] && echo 1 || echo 0)"
+printf 'conf=%s\n' "\$(${SU}test -f "\$conf" && echo 1 || echo 0)"
 # meta <file> -> "<ssl 0|1>\t<server_name domains>"
 # Collects every server_name token across the file (comments stripped), drops the
 # catch-all '_' and duplicates, so a redirect/catch-all block written first does
 # not mask the real vhost's domains.
 meta() {
-  sn=\$(sed 's/#.*//' "\$1" 2>/dev/null \
+  sn=\$(${SU}sed 's/#.*//' "\$1" 2>/dev/null \
         | awk 'tolower(\$1)=="server_name"{for(i=2;i<=NF;i++){t=\$i; sub(/;.*/,"",t); if(t!=""&&t!="_"&&!seen[t]++){printf "%s%s",(n++?" ":""),t}}}')
-  s=0; sed 's/#.*//' "\$1" 2>/dev/null \
+  s=0; ${SU}sed 's/#.*//' "\$1" 2>/dev/null \
         | grep -aiqE '(^|[[:space:]])ssl_certificate([[:space:]]|;)|listen[^;]*[[:space:]]ssl([[:space:]]|;|\$)' && s=1
   printf '%s\t%s' "\$s" "\$sn"
 }
 if [ "\$style" = sites ]; then
   for f in "\$base"/sites-available/*; do
-    [ -e "\$f" ] || continue
+    ${SU}test -e "\$f" || continue
     n=\$(basename "\$f")
-    if [ -e "\$base/sites-enabled/\$n" ]; then en=1; else en=0; fi
+    if ${SU}test -e "\$base/sites-enabled/\$n"; then en=1; else en=0; fi
     printf 'site\t%s\t%s\t' "\$n" "\$en"; meta "\$f"; printf '\n'
   done
 else
   for f in "\$base"/conf.d/*.conf "\$base"/conf.d/*.conf.disabled; do
-    [ -e "\$f" ] || continue
+    ${SU}test -e "\$f" || continue
     b=\$(basename "\$f")
     case "\$b" in
-      *.conf.disabled) n="\${b%.disabled}"; [ -e "\$base/conf.d/\$n" ] && continue; en=0;;
+      *.conf.disabled) n="\${b%.disabled}"; ${SU}test -e "\$base/conf.d/\$n" && continue; en=0;;
       *.conf)          n="\$b"; en=1;;
       *) continue;;
     esac
@@ -977,7 +988,10 @@ fi
 REMOTE
 )
     ssh_exec "$remote"
-    if [ "$SSH_RC" -ne 0 ] && [ -z "$SSH_OUT" ]; then emit_err "$(classify)"; fi
+    if [ "$SSH_RC" -ne 0 ] && [ -z "$SSH_OUT" ]; then
+        is_sudo_password_error "$SSH_ERR" && emit_err "sudo_password"
+        emit_err "$(classify)"
+    fi
     style=$(printf '%s\n' "$SSH_OUT" | sed -n 's/^style=//p' | head -1)
     hasconf=$(printf '%s\n' "$SSH_OUT" | sed -n 's/^conf=//p' | head -1)
     [ "$hasconf" = "1" ] && hasconf_json=true || hasconf_json=false
@@ -989,14 +1003,14 @@ REMOTE
     ;;
 
 nginx-test)
-    ssh_exec "nginx -t 2>&1"
+    ssh_exec "${SUDO:+$SUDO }nginx -t 2>&1"
     out=$(printf '%s' "$SSH_OUT" | jq -Rsc '.'); [ -n "$out" ] || out='""'
     if [ "$SSH_RC" -eq 0 ]; then printf '{"ok":true,"output":%s}\n' "$out"
     else printf '{"ok":false,"output":%s}\n' "$out"; fi
     ;;
 
 nginx-reload)
-    ssh_exec "systemctl reload nginx 2>&1 || nginx -s reload 2>&1"
+    ssh_exec "${SUDO:+$SUDO }systemctl reload nginx 2>&1 || ${SUDO:+$SUDO }nginx -s reload 2>&1"
     out=$(printf '%s' "$SSH_OUT" | jq -Rsc '.'); [ -n "$out" ] || out='""'
     if [ "$SSH_RC" -eq 0 ]; then printf '{"ok":true,"output":%s}\n' "$out"
     else printf '{"ok":false,"output":%s}\n' "$out"; fi
@@ -1006,25 +1020,25 @@ nginx-site)
     ACT="${1:-}"; NAME="${2:-}"
     case "$ACT" in enable|disable) ;; *) emit_err "bad_action";; esac
     [ -n "$NAME" ] || emit_err "no_name"
-    B=$(rsq "$NGINX_DIR"); N=$(rsq "$NAME")
+    B=$(rsq "$NGINX_DIR"); N=$(rsq "$NAME"); SU="${SUDO:+$SUDO }"
     remote=$(cat <<REMOTE
 base='$B'; name='$N'; act='$ACT'
 name=\$(basename "\$name")
 conf="\$base/nginx.conf"
 style=confd
-if [ -f "\$conf" ] && grep -qE 'sites-enabled' "\$conf" 2>/dev/null; then style=sites
-elif [ -d "\$base/sites-available" ]; then style=sites; fi
+if ${SU}test -f "\$conf" && ${SU}grep -qE 'sites-enabled' "\$conf" 2>/dev/null; then style=sites
+elif ${SU}test -d "\$base/sites-available"; then style=sites; fi
 if [ "\$style" = sites ]; then
-  if [ "\$act" = enable ]; then ln -sf "../sites-available/\$name" "\$base/sites-enabled/\$name"
-  else rm -f "\$base/sites-enabled/\$name"; fi
+  if [ "\$act" = enable ]; then ${SU}ln -sf "../sites-available/\$name" "\$base/sites-enabled/\$name"
+  else ${SU}rm -f "\$base/sites-enabled/\$name"; fi
 else
   # never overwrite the opposite-state twin (would silently destroy a config)
   if [ "\$act" = enable ]; then
-    [ -e "\$base/conf.d/\$name" ] && { printf 'CONFLICT\n'; exit 0; }
-    [ -f "\$base/conf.d/\$name.disabled" ] && mv "\$base/conf.d/\$name.disabled" "\$base/conf.d/\$name"
+    ${SU}test -e "\$base/conf.d/\$name" && { printf 'CONFLICT\n'; exit 0; }
+    ${SU}test -f "\$base/conf.d/\$name.disabled" && ${SU}mv "\$base/conf.d/\$name.disabled" "\$base/conf.d/\$name"
   else
-    [ -e "\$base/conf.d/\$name.disabled" ] && { printf 'CONFLICT\n'; exit 0; }
-    [ -f "\$base/conf.d/\$name" ] && mv "\$base/conf.d/\$name" "\$base/conf.d/\$name.disabled"
+    ${SU}test -e "\$base/conf.d/\$name.disabled" && { printf 'CONFLICT\n'; exit 0; }
+    ${SU}test -f "\$base/conf.d/\$name" && ${SU}mv "\$base/conf.d/\$name" "\$base/conf.d/\$name.disabled"
   fi
 fi
 REMOTE
@@ -1032,6 +1046,7 @@ REMOTE
     ssh_exec "$remote"
     printf '%s' "$SSH_OUT" | grep -q '^CONFLICT$' && emit_err "twin_exists"
     if [ "$SSH_RC" -eq 0 ]; then printf '{"ok":true}\n'
+    elif is_sudo_password_error "$SSH_ERR"; then emit_err "sudo_password"
     else msg=$(printf '%s' "$SSH_ERR" | tr -d '\r\n"' | head -c 160); printf '{"ok":false,"reason":"%s"}\n' "${msg:-failed}"; fi
     ;;
 
@@ -1047,26 +1062,26 @@ nginx-create)
     [[ "$EN" =~ ^[01]$ ]] || EN=1
     [[ "$MK" =~ ^[01]$ ]] || MK=0
     B=$(rsq "$NGINX_DIR"); N=$(rsq "$NAME"); SN=$(rsq "$SNAMES")
-    TY=$(rsq "$TYPE"); TG=$(rsq "$TARGET")
+    TY=$(rsq "$TYPE"); TG=$(rsq "$TARGET"); SU="${SUDO:+$SUDO }"
     remote=$(cat <<REMOTE
 base='$B'; name='$N'; snames='$SN'; type='$TY'; target='$TG'; enable='$EN'; mkroot='$MK'
 name=\$(basename "\$name")
 [ -n "\$name" ] || { printf 'ERR\tbad_name\n'; exit 0; }
 conf="\$base/nginx.conf"
 style=confd
-if [ -f "\$conf" ] && grep -qE 'sites-enabled' "\$conf" 2>/dev/null; then style=sites
-elif [ -d "\$base/sites-available" ]; then style=sites; fi
+if ${SU}test -f "\$conf" && ${SU}grep -qE 'sites-enabled' "\$conf" 2>/dev/null; then style=sites
+elif ${SU}test -d "\$base/sites-available"; then style=sites; fi
 if [ "\$style" = sites ]; then
-  mkdir -p "\$base/sites-available" "\$base/sites-enabled" 2>/dev/null
+  ${SU}mkdir -p "\$base/sites-available" "\$base/sites-enabled" 2>/dev/null
   file="\$base/sites-available/\$name"
 else
-  cdir="\$base/conf.d"; mkdir -p "\$cdir" 2>/dev/null
+  cdir="\$base/conf.d"; ${SU}mkdir -p "\$cdir" 2>/dev/null
   case "\$name" in *.conf) ;; *) name="\$name.conf";; esac
   # reject if EITHER the enabled or disabled twin already exists
-  { [ -e "\$cdir/\$name" ] || [ -e "\$cdir/\$name.disabled" ]; } && { printf 'ERR\texists\n'; exit 0; }
+  { ${SU}test -e "\$cdir/\$name" || ${SU}test -e "\$cdir/\$name.disabled"; } && { printf 'ERR\texists\n'; exit 0; }
   if [ "\$enable" = 1 ]; then file="\$cdir/\$name"; else file="\$cdir/\$name.disabled"; fi
 fi
-[ -e "\$file" ] && { printf 'ERR\texists\n'; exit 0; }
+${SU}test -e "\$file" && { printf 'ERR\texists\n'; exit 0; }
 {
   printf 'server {\n'
   printf '    listen 80;\n'
@@ -1096,18 +1111,19 @@ NGINX
 NGINX
   fi
   printf '}\n'
-} > "\$file" 2>/dev/null || { printf 'ERR\twrite_failed\n'; exit 0; }
+} | ${SU}tee "\$file" >/dev/null 2>&1 || { printf 'ERR\twrite_failed\n'; exit 0; }
 if [ "\$style" = sites ] && [ "\$enable" = 1 ]; then
-  ln -sf "../sites-available/\$name" "\$base/sites-enabled/\$name" 2>/dev/null
+  ${SU}ln -sf "../sites-available/\$name" "\$base/sites-enabled/\$name" 2>/dev/null
 fi
-if [ "\$type" = static ] && [ "\$mkroot" = 1 ] && [ -n "\$target" ] && [ ! -d "\$target" ]; then
-  mkdir -p "\$target" 2>/dev/null && \
-    printf '<!doctype html>\n<title>%s</title>\n<h1>It works: %s</h1>\n' "\$snames" "\$snames" > "\$target/index.html" 2>/dev/null
+if [ "\$type" = static ] && [ "\$mkroot" = 1 ] && [ -n "\$target" ] && ${SU}test ! -d "\$target"; then
+  ${SU}mkdir -p "\$target" 2>/dev/null && \
+    printf '<!doctype html>\n<title>%s</title>\n<h1>It works: %s</h1>\n' "\$snames" "\$snames" | ${SU}tee "\$target/index.html" >/dev/null 2>&1
 fi
 printf 'OK\t%s\n' "\$file"
 REMOTE
 )
     ssh_exec "$remote"
+    is_sudo_password_error "$SSH_ERR" && emit_err "sudo_password"
     if [ "$SSH_RC" -ne 0 ] && [ -z "$SSH_OUT" ]; then emit_err "$(classify)"; fi
     line=$(printf '%s\n' "$SSH_OUT" | grep -E '^(OK|ERR)\b' | tail -1)
     status=$(printf '%s' "$line" | cut -f1)
@@ -1126,7 +1142,7 @@ nginx-certbot)
     DOMAINS="${1:-}"; REDIR="${2:-1}"
     [ -n "$DOMAINS" ] || emit_err "no_domain"
     [[ "$REDIR" =~ ^[01]$ ]] || REDIR=1
-    D=$(rsq "$DOMAINS")
+    D=$(rsq "$DOMAINS"); SU="${SUDO:+$SUDO }"
     remote=$(cat <<REMOTE
 command -v certbot >/dev/null 2>&1 || { printf 'NOCERTBOT\n'; exit 0; }
 domains='$D'; redir='$REDIR'
@@ -1136,13 +1152,14 @@ for d in \$domains; do set -- "\$@" -d "\$d"; done
 set +f
 [ "\$#" -gt 0 ] || { printf 'NODOMAIN\n'; exit 0; }
 if [ "\$redir" = 1 ]; then rflag=--redirect; else rflag=--no-redirect; fi
-certbot --nginx -n --agree-tos --register-unsafely-without-email "\$rflag" "\$@" 2>&1
+${SU}certbot --nginx -n --agree-tos --register-unsafely-without-email "\$rflag" "\$@" 2>&1
 printf '\n@@RC@@%s\n' "\$?"      # leading \n so the marker is always on its own line
 REMOTE
 )
     ssh_exec "$remote"
     if [ "$SSH_RC" -ne 0 ] && [ -z "$SSH_OUT" ]; then emit_err "$(classify)"; fi
     printf '%s' "$SSH_OUT" | grep -q '^NOCERTBOT$' && emit_err "no_certbot"
+    is_sudo_password_error "$SSH_OUT$SSH_ERR" && emit_err "sudo_password"
     rc=$(printf '%s\n' "$SSH_OUT" | sed -n 's/^@@RC@@//p' | tail -1)
     body=$(printf '%s\n' "$SSH_OUT" | grep -vE '^@@RC@@')
     out=$(printf '%s' "$body" | jq -Rsc '.'); [ -n "$out" ] || out='""'
@@ -1152,7 +1169,7 @@ REMOTE
 
 # nginx-certs: list installed Let's Encrypt certs and their expiry (certbot certificates)
 nginx-certs)
-    ssh_exec 'command -v certbot >/dev/null 2>&1 || { echo "@@NOCERTBOT@@"; exit 0; }; certbot certificates 2>/dev/null'
+    ssh_exec "command -v certbot >/dev/null 2>&1 || { echo @@NOCERTBOT@@; exit 0; }; ${SUDO:+$SUDO }certbot certificates 2>/dev/null"
     if [ "$SSH_RC" -ne 0 ] && [ -z "$SSH_OUT" ]; then emit_err "$(classify)"; fi
     if printf '%s' "$SSH_OUT" | grep -q '@@NOCERTBOT@@'; then
         printf '{"ok":true,"certbot":false,"certs":[]}\n'; exit 0
@@ -1171,6 +1188,122 @@ nginx-certs)
                        |map({name:.[0],domains:(.[1]//""),expiry:(.[2]//""),valid:(.[3]//"")})' 2>/dev/null)
     [ -n "$certs" ] || certs="[]"
     printf '{"ok":true,"certbot":true,"certs":%s}\n' "$certs"
+    ;;
+
+# ---------------------------------------------------------------------------
+# conf.d snippets: the shared include files (upstreams, maps, ...) under
+# $NGINX_DIR/conf.d that are not server blocks. Listed, created, edited (readfile /
+# edit), enabled/disabled (a .disabled twin) and deleted here. Everything is confined
+# to conf.d and a name may only be a single path component.
+# ---------------------------------------------------------------------------
+nginx-confd)
+    SU="${SUDO:+$SUDO }"; B=$(rsq "$NGINX_DIR")
+    # Enumerate via ${SU}find (not a shell glob) so a root-only conf.d is still readable
+    # under sudo, and skip a .disabled file when its enabled twin exists (one row per snippet).
+    remote=$(cat <<REMOTE
+base='$B'; cd="\$base/conf.d"
+${SU}test -d "\$cd" || { echo "@@NODIR@@"; exit 0; }
+${SU}find "\$cd" -maxdepth 1 -type f 2>/dev/null | while IFS= read -r f; do
+  b=\$(basename "\$f")
+  case "\$b" in
+    *.disabled) n="\${b%.disabled}"; ${SU}test -e "\$cd/\$n" && continue; en=0 ;;
+    *)          n="\$b"; en=1 ;;
+  esac
+  sz=\$(${SU}stat -c %s "\$f" 2>/dev/null || echo 0)
+  printf 'file\t%s\t%s\t%s\t%s\n' "\$n" "\$f" "\$en" "\$sz"
+done
+REMOTE
+)
+    ssh_exec "$remote"
+    # A sudo password prompt makes the remote `test -d` fail and emit @@NODIR@@ spuriously,
+    # so detect that before trusting the marker (and before classify, which needs no stdout).
+    is_sudo_password_error "$SSH_ERR" && emit_err "sudo_password"
+    if [ "$SSH_RC" -ne 0 ] && [ -z "$SSH_OUT" ]; then emit_err "$(classify)"; fi
+    cdir="$NGINX_DIR/conf.d"
+    if printf '%s' "$SSH_OUT" | grep -q '@@NODIR@@'; then
+        printf '{"ok":true,"dir":%s,"files":[]}\n' "$(jstr "$cdir")"; exit 0
+    fi
+    files=$(printf '%s\n' "$SSH_OUT" | awk -F'\t' '$1=="file"{printf "%s\t%s\t%s\t%s\n",$2,$3,$4,$5}' \
+        | jq -Rsc 'split("\n")|map(select(length>0))|map(split("\t"))|
+            map({name:.[0], path:.[1], enabled:(.[2]=="1"), size:(.[3]|tonumber? // 0)})' 2>/dev/null)
+    [ -n "$files" ] || files="[]"
+    printf '{"ok":true,"dir":%s,"files":%s}\n' "$(jstr "$cdir")" "$files"
+    ;;
+
+# nginx-confd-toggle ACT NAME — flip conf.d/NAME <-> conf.d/NAME.disabled. Always acts
+# in conf.d (a snippet lives there regardless of the vhost layout); never clobbers the twin.
+nginx-confd-toggle)
+    ACT="${1:-}"; NAME="${2:-}"
+    case "$ACT" in enable|disable) ;; *) emit_err "bad_action";; esac
+    [ -n "$NAME" ] || emit_err "no_name"
+    case "$NAME" in ''|*/*|..|.) emit_err "bad_name";; esac
+    SU="${SUDO:+$SUDO }"; B=$(rsq "$NGINX_DIR"); N=$(rsq "$NAME")
+    remote=$(cat <<REMOTE
+base='$B'; cd="\$base/conf.d"; name='$N'; act='$ACT'
+name=\$(basename "\$name")
+if [ "\$act" = enable ]; then
+  ${SU}test -e "\$cd/\$name" && { printf 'CONFLICT\n'; exit 0; }
+  ${SU}test -f "\$cd/\$name.disabled" && ${SU}mv "\$cd/\$name.disabled" "\$cd/\$name"
+else
+  ${SU}test -e "\$cd/\$name.disabled" && { printf 'CONFLICT\n'; exit 0; }
+  ${SU}test -f "\$cd/\$name" && ${SU}mv "\$cd/\$name" "\$cd/\$name.disabled"
+fi
+printf 'OK\n'
+REMOTE
+)
+    ssh_exec "$remote"
+    printf '%s' "$SSH_OUT" | grep -q '^CONFLICT$' && emit_err "twin_exists"
+    if printf '%s' "$SSH_OUT" | grep -q '^OK$'; then printf '{"ok":true}\n'
+    elif is_sudo_password_error "$SSH_ERR"; then emit_err "sudo_password"
+    elif echo "$SSH_ERR" | grep -qi 'permission denied'; then emit_err "permission"
+    else emit_err "toggle_failed"; fi
+    ;;
+
+# nginx-confd-del NAME — remove conf.d/NAME and its .disabled twin. Confined to conf.d.
+nginx-confd-del)
+    NAME="${1:-}"
+    [ -n "$NAME" ] || emit_err "no_name"
+    case "$NAME" in ''|*/*|..|.) emit_err "bad_name";; esac
+    SU="${SUDO:+$SUDO }"; B=$(rsq "$NGINX_DIR"); N=$(rsq "$NAME")
+    remote=$(cat <<REMOTE
+base='$B'; cd="\$base/conf.d"; name='$N'
+name=\$(basename "\$name")
+${SU}rm -f -- "\$cd/\$name" "\$cd/\$name.disabled" && printf 'OK\n'
+REMOTE
+)
+    ssh_exec "$remote"
+    if printf '%s' "$SSH_OUT" | grep -q '^OK$'; then printf '{"ok":true}\n'
+    elif is_sudo_password_error "$SSH_ERR"; then emit_err "sudo_password"
+    elif echo "$SSH_ERR" | grep -qi 'permission denied'; then emit_err "permission"
+    else emit_err "delete_failed"; fi
+    ;;
+
+# nginx-confd-new NAME — create a new (templated) conf.d/NAME; ".conf" added if no
+# extension. Refuses if either twin already exists. Returns the path so the UI can edit it.
+nginx-confd-new)
+    NAME="${1:-}"
+    [ -n "$NAME" ] || emit_err "no_name"
+    case "$NAME" in *[!A-Za-z0-9._-]*|''|..|.) emit_err "bad_name";; esac
+    SU="${SUDO:+$SUDO }"; B=$(rsq "$NGINX_DIR"); N=$(rsq "$NAME")
+    remote=$(cat <<REMOTE
+base='$B'; cd="\$base/conf.d"; name='$N'
+name=\$(basename "\$name")
+case "\$name" in *.*) ;; *) name="\$name.conf";; esac
+${SU}test -e "\$cd/\$name" && { printf 'EXISTS\n'; exit 0; }
+${SU}test -e "\$cd/\$name.disabled" && { printf 'EXISTS\n'; exit 0; }
+${SU}mkdir -p "\$cd" 2>/dev/null
+printf '# %s\n# nginx include — e.g. an upstream {} or map {} block.\n\n' "\$name" \
+  | ${SU}tee "\$cd/\$name" >/dev/null 2>&1 && printf 'OK\t%s\n' "\$cd/\$name"
+REMOTE
+)
+    ssh_exec "$remote"
+    printf '%s' "$SSH_OUT" | grep -q '^EXISTS$' && emit_err "exists"
+    is_sudo_password_error "$SSH_ERR" && emit_err "sudo_password"
+    line=$(printf '%s\n' "$SSH_OUT" | grep -E '^OK\b' | tail -1)
+    if [ -n "$line" ]; then
+        printf '{"ok":true,"path":%s}\n' "$(printf '%s' "$line" | cut -f2- | jq -Rsc '.')"
+    elif echo "$SSH_ERR" | grep -qi 'permission denied'; then emit_err "permission"
+    else emit_err "create_failed"; fi
     ;;
 
 *)

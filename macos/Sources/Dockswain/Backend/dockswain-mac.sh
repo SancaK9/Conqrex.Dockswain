@@ -25,7 +25,11 @@
 #           | stack-action | readfile | writefile | sftp-home | sftp-list
 #           | sftp-mkdir | sftp-rename | sftp-delete | scp-up | scp-down
 #           | nginx-list | nginx-toggle | nginx-test | nginx-reload
+#           | nginx-confd-list | nginx-confd-toggle | nginx-confd-del
 #           | certbot-list | certbot-issue
+#
+# Env (also): CNQ_SUDO (1 = run nginx/certbot/file ops via sudo -n; the per-server
+#   "use sudo" toggle). NOPASSWD or a root login is required for sudo -n to succeed.
 #
 # Env (set by the app): CNQ_DOCKER_CMD (default "docker"), CNQ_SSH_TIMEOUT (5),
 #   CNQ_AUTH ("key" | "password"), SSHPASS (when CNQ_AUTH=password).
@@ -42,11 +46,20 @@ set -u
 SUB="${1:-}"; shift || true
 
 DOCKER="${CNQ_DOCKER_CMD:-docker}"
-# When docker runs via sudo, mirror that for root-owned filesystem reads/writes
-# (container log files, /etc/nginx, certbot). sudo -n never prompts, so a missing
-# NOPASSWD rule fails fast. With a bare `docker` we run unprivileged.
-case "$DOCKER" in "sudo "*|sudo) SUDO="sudo -n" ;; *) SUDO="" ;; esac
+# Privileged filesystem reads/writes (container log files, /etc/nginx, certbot) run
+# through sudo when EITHER the per-server "use sudo" toggle is on (CNQ_SUDO=1) or the
+# docker command itself is driven via sudo. sudo -n never prompts, so a missing NOPASSWD
+# rule fails fast instead of hanging — connect as root or grant NOPASSWD for those tools.
+# With neither, we run as the bare SSH user (fine when that user is root).
+case "$DOCKER" in "sudo "*|sudo) docker_sudo=1 ;; *) docker_sudo=0 ;; esac
+if [ "${CNQ_SUDO:-0}" = "1" ] || [ "$docker_sudo" = "1" ]; then SUDO="sudo -n"; else SUDO=""; fi
 NGINX_DIR="${CNQ_NGINX_DIR:-/etc/nginx}"
+
+# Did a command fail because sudo wanted a password (no NOPASSWD, no TTY)? Used to turn
+# a generic failure into an actionable reason in the nginx/certbot/file paths.
+is_sudo_password_error() {
+    [ -n "$SUDO" ] && printf '%s' "$1" | grep -qiE 'sudo:.*(password is required|terminal is required|no tty|askpass)|must have a tty to run sudo'
+}
 
 emit_err() { printf '{"ok":false,"reason":"%s"}\n' "$1"; exit 0; }
 
@@ -404,6 +417,7 @@ writefile)
     ssh_exec "printf %s '$besc' | base64 -d | ${SUDO:+$SUDO }tee -- '$pesc' >/dev/null 2>&1 && echo OK"
     if [ "$SSH_RC" -eq 0 ] && [ "$(printf '%s' "$SSH_OUT" | tr -d '\r\n ')" = OK ]; then
         printf '{"ok":true}\n'
+    elif is_sudo_password_error "$SSH_ERR$SSH_OUT"; then emit_err "sudo_password"
     elif echo "$SSH_ERR" | grep -qi 'permission denied'; then emit_err "permission"
     else emit_err "write_failed"; fi
     ;;
@@ -606,6 +620,93 @@ nginx-reload)
     ;;
 
 # ---------------------------------------------------------------------------
+# conf.d snippets: the shared include files (upstreams, maps, ...) under
+# $NGINX_DIR/conf.d that are not server blocks. Listed, created, edited (via
+# readfile/writefile), enabled/disabled (a .disabled twin) and deleted here.
+# All paths are confined to conf.d and a name may only be a single path component.
+# ---------------------------------------------------------------------------
+nginx-confd-list)
+    SU="${SUDO:+$SUDO }"
+    # Enumerate via ${SU}find (not a shell glob) so a root-only conf.d is still readable
+    # under sudo, and skip a .disabled file when its enabled twin exists (one row per snippet).
+    IFS= read -r -d '' remote <<REMOTE || true
+cd="$NGINX_DIR/conf.d"
+${SU}test -d "\$cd" || { echo "@@NODIR@@"; exit 0; }
+${SU}find "\$cd" -maxdepth 1 -type f 2>/dev/null | while IFS= read -r f; do
+  b=\$(basename "\$f")
+  case "\$b" in
+    *.disabled) n="\${b%.disabled}"; ${SU}test -e "\$cd/\$n" && continue; en=0 ;;
+    *)          n="\$b"; en=1 ;;
+  esac
+  sz=\$(${SU}stat -c %s "\$f" 2>/dev/null || echo 0)
+  printf 'file\t%s\t%s\t%s\t%s\n' "\$n" "\$f" "\$en" "\$sz"
+done
+REMOTE
+    ssh_exec "$remote"
+    # A sudo password prompt makes the remote `test -d` fail and emit @@NODIR@@ spuriously,
+    # so detect that before trusting the marker (and before classify, which needs no stdout).
+    is_sudo_password_error "$SSH_ERR" && emit_err "sudo_password"
+    if [ "$SSH_RC" -ne 0 ] && [ -z "$SSH_OUT" ]; then emit_err "$(classify)"; fi
+    if printf '%s' "$SSH_OUT" | grep -q '@@NODIR@@'; then
+        printf '{"ok":true,"dir":%s,"files":[]}\n' "$(jstr "$NGINX_DIR/conf.d")"; exit 0
+    fi
+    files=$(printf '%s\n' "$SSH_OUT" | awk -F'\t' '$1=="file"{printf "%s\t%s\t%s\t%s\n",$2,$3,$4,$5}' \
+        | jq -Rsc 'split("\n")|map(select(length>0))|map(split("\t"))|
+            map({name:.[0], path:.[1], enabled:(.[2]=="1"), size:(.[3]|tonumber? // 0)})' 2>/dev/null)
+    [ -n "$files" ] || files="[]"
+    printf '{"ok":true,"dir":%s,"files":%s}\n' "$(jstr "$NGINX_DIR/conf.d")" "$files"
+    ;;
+
+# nginx-confd-toggle ACT NAME — flip conf.d/NAME <-> conf.d/NAME.disabled. Unlike
+# nginx-toggle this never touches sites-enabled; a snippet lives in conf.d regardless
+# of the vhost layout. Refuses to clobber the opposite-state twin.
+nginx-confd-toggle)
+    ACT="${1:-}"; BN="${2:-}"
+    case "$ACT" in enable|disable) ;; *) emit_err "bad_action";; esac
+    [ -n "$BN" ] || emit_err "no_name"
+    case "$BN" in */*|..|.|'') emit_err "bad_name";; esac
+    SU="${SUDO:+$SUDO }"; N=$(rsq "$BN")
+    IFS= read -r -d '' remote <<REMOTE || true
+cd="$NGINX_DIR/conf.d"; name='$N'; act='$ACT'
+name=\$(basename "\$name")
+if [ "\$act" = enable ]; then
+  ${SU}test -e "\$cd/\$name" && { echo CONFLICT; exit 0; }
+  ${SU}test -f "\$cd/\$name.disabled" && ${SU}mv "\$cd/\$name.disabled" "\$cd/\$name"
+else
+  ${SU}test -e "\$cd/\$name.disabled" && { echo CONFLICT; exit 0; }
+  ${SU}test -f "\$cd/\$name" && ${SU}mv "\$cd/\$name" "\$cd/\$name.disabled"
+fi
+echo OK
+REMOTE
+    ssh_exec "$remote"
+    case "$(printf '%s' "$SSH_OUT" | tr -d '\r\n ')" in
+        *OK)       printf '{"ok":true}\n' ;;
+        *CONFLICT) emit_err "conflict" ;;
+        *) if is_sudo_password_error "$SSH_ERR"; then emit_err "sudo_password"
+           elif echo "$SSH_ERR" | grep -qi 'permission denied'; then emit_err "permission"
+           else emit_err "toggle_failed"; fi ;;
+    esac
+    ;;
+
+# nginx-confd-del NAME — remove conf.d/NAME (and its .disabled twin). Confined to conf.d.
+nginx-confd-del)
+    BN="${1:-}"
+    [ -n "$BN" ] || emit_err "no_name"
+    case "$BN" in */*|..|.|'') emit_err "bad_name";; esac
+    SU="${SUDO:+$SUDO }"; N=$(rsq "$BN")
+    IFS= read -r -d '' remote <<REMOTE || true
+cd="$NGINX_DIR/conf.d"; name='$N'
+name=\$(basename "\$name")
+${SU}rm -f -- "\$cd/\$name" "\$cd/\$name.disabled" && echo OK
+REMOTE
+    ssh_exec "$remote"
+    if [ "$SSH_RC" -eq 0 ] && printf '%s' "$SSH_OUT" | grep -q OK; then printf '{"ok":true}\n'
+    elif is_sudo_password_error "$SSH_ERR$SSH_OUT"; then emit_err "sudo_password"
+    elif echo "$SSH_ERR" | grep -qi 'permission denied'; then emit_err "permission"
+    else emit_err "delete_failed"; fi
+    ;;
+
+# ---------------------------------------------------------------------------
 # certbot: list certs + issue with the nginx plugin.
 # ---------------------------------------------------------------------------
 certbot-list)
@@ -635,6 +736,7 @@ certbot-issue)
     rflag="--redirect"; [ "$REDIRECT" = 0 ] && rflag="--no-redirect"
     ssh_exec "${SUDO:+$SUDO }certbot --nginx${dargs} --non-interactive --agree-tos --register-unsafely-without-email $rflag 2>&1"
     if [ "$SSH_RC" -eq 0 ]; then printf '{"ok":true,"output":%s}\n' "$(printf '%s' "$SSH_OUT" | tail -c 400 | jq -Rsc '.')"
+    elif is_sudo_password_error "$SSH_OUT$SSH_ERR"; then emit_err "sudo_password"
     else printf '{"ok":false,"reason":%s}\n' "$(printf '%s' "$SSH_OUT$SSH_ERR" | tail -c 400 | jq -Rsc '.')"; fi
     ;;
 

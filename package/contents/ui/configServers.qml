@@ -27,7 +27,8 @@ KCM.SimpleKCM {
                 serversModel.append({
                     label: s.label || "", user: s.user || "", host: s.host || "",
                     port: (s.port || 22), key: s.key || "", auth: s.auth || "key",
-                    remmina: s.remmina || "", hasSecret: s.hasSecret || false
+                    remmina: s.remmina || "", hasSecret: s.hasSecret || false,
+                    useSudo: s.useSudo || false
                 });
             });
         } catch (e) {}
@@ -37,7 +38,7 @@ KCM.SimpleKCM {
         for (var i = 0; i < serversModel.count; i++) {
             var r = serversModel.get(i);
             arr.push({ label: r.label, user: r.user, host: r.host, port: r.port, key: r.key, auth: r.auth,
-                       remmina: r.remmina || "", hasSecret: r.hasSecret || false });
+                       remmina: r.remmina || "", hasSecret: r.hasSecret || false, useSudo: r.useSudo || false });
         }
         page.cfg_serversJson = JSON.stringify(arr);
     }
@@ -66,7 +67,8 @@ KCM.SimpleKCM {
                             serversModel.append({
                                 label: h.label || "", user: h.user || "", host: h.host || "",
                                 port: (h.port || 22), key: h.key || "", auth: h.auth || "key",
-                                remmina: h.remmina || "", hasSecret: h.hasSecret || false
+                                remmina: h.remmina || "", hasSecret: h.hasSecret || false,
+                                useSudo: false
                             });
                         }
                         if (h.filezilla) page.storeFzPass(h);    // copy FileZilla pass into the keyring
@@ -128,7 +130,7 @@ KCM.SimpleKCM {
             QQC2.Button {
                 text: i18n("Add server")
                 icon.name: "list-add"
-                onClicked: { serversModel.append({ label: "", user: "root", host: "", port: 22, key: "", auth: "password", remmina: "", hasSecret: false }); page.save(); }
+                onClicked: { serversModel.append({ label: "", user: "root", host: "", port: 22, key: "", auth: "password", remmina: "", hasSecret: false, useSudo: false }); page.save(); }
             }
             QQC2.Button {
                 text: i18n("Import from Remmina")
@@ -275,6 +277,22 @@ KCM.SimpleKCM {
                         text: model.key
                         placeholderText: i18n("~/.ssh/id_ed25519 — leave empty to use ssh-agent")
                         onEditingFinished: { serversModel.setProperty(index, "key", text); page.save(); }
+                    }
+
+                    QQC2.Label { text: i18n("Privileges") }
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: 0
+                        QQC2.CheckBox {
+                            text: i18n("Use sudo for nginx, certbot & config edits")
+                            checked: model.useSudo || false
+                            onToggled: { serversModel.setProperty(index, "useSudo", checked); page.save(); }
+                        }
+                        QQC2.Label {
+                            Layout.fillWidth: true; wrapMode: Text.WordWrap
+                            font: Kirigami.Theme.smallFont; opacity: 0.7
+                            text: i18n("Runs privileged commands via sudo -n. Needs NOPASSWD sudo on the server. Leave off if the SSH user is root.")
+                        }
                     }
                 }
             }

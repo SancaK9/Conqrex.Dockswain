@@ -103,13 +103,18 @@ it reuses the same socket and returns in milliseconds.
   arrows) when the panel is wide, a Local/Remote toggle when narrow.
   navigate/mkdir/rename/delete, and upload/download that reuses the warm SSH master
   (scp, no second password). Local listing is native; remote is over SSH.
-- **Nginx:** browse `/etc/nginx` sites, enable/disable, view/**edit** a config inline
-  (written back over SSH), run `nginx -t`, reload, and **create a new site** — a
-  reverse proxy (with the WebSocket upgrade headers) or a static site — with an
-  optional jump straight to Get SSL.
+- **Nginx:** browse `/etc/nginx` in two tabs — **Sites** (server blocks: enable/disable,
+  view/**edit** inline, `nginx -t`, reload, and **create a new site** — a reverse proxy
+  with the WebSocket upgrade headers or a static site, with an optional jump straight to
+  Get SSL) and **conf.d** (the shared include snippets — upstreams, maps — where you can
+  create, edit, enable/disable and delete files). Edits are written back over SSH.
 - **Certbot SSL:** list certificates and issue a new one with `certbot --nginx`
-  (optional HTTP→HTTPS redirect).
+  (optional HTTP→HTTPS redirect). Needs the domain's DNS pointing here and port 80 open —
+  those, not the command, are what usually block an issue.
 - **Servers:** add by hand or import from `~/.ssh/config`; passwords in the Keychain.
+  Each server has a **Use sudo** toggle: touching `/etc/nginx` and running `certbot`
+  need root, so either connect as root or enable it (the commands then run via `sudo -n`,
+  which needs a NOPASSWD rule since there's no terminal to type a password into).
 
 Everything runs over one multiplexed SSH connection, so polls and actions return in
 milliseconds and interactive terminals/transfers don't re-authenticate.
