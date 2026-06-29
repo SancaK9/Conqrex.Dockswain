@@ -1,0 +1,4 @@
+.build/
+Dockswain.app/
+*.xcodeproj
+.DS_Store

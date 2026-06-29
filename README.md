@@ -8,6 +8,10 @@ desktop widget showing the full list.
 
 I wrote it for CachyOS but there's nothing distro-specific about it.
 
+> **On macOS?** There's a native menu-bar app in [`macos/`](macos/) that reuses the
+> same SSH/docker backend approach (a plasmoid can't run on macOS, so the UI was
+> rewritten in SwiftUI). See [macos/README.md](macos/README.md).
+
 ## How it works
 
 There's a helper script, `package/contents/code/dockswain.sh`, that runs the
