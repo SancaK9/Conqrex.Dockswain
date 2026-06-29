@@ -4,14 +4,26 @@ import Foundation
 /// nginx, certbot). Each decodes the helper's JSON into a model.
 extension Backend {
 
-    private func decodeField<T: Decodable>(_ json: String, key: String, as: T.Type) throws -> T {
+    private func decodeField<T: Decodable>(_ json: String, key: String, as type: T.Type) throws -> T {
         guard let data = lastJSONLine(json) else { throw BackendError.decode(json) }
-        let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        let obj = try JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed]) as? [String: Any]
         if let ok = obj?["ok"] as? Bool, ok == false {
             throw BackendError.helper(reason: (obj?["reason"] as? String) ?? "error")
         }
         guard let field = obj?[key] else { throw BackendError.decode(json) }
-        let fieldData = try JSONSerialization.data(withJSONObject: field)
+
+        // Scalars are handled directly: JSONSerialization.data(withJSONObject:) throws an
+        // *Objective-C* exception (uncatchable by `try`) on a non-container top level, which
+        // is what crashed the app on string fields like nginx "dir" / sftp "home".
+        if let v = field as? String, let out = v as? T { return out }
+        if let n = field as? NSNumber {
+            if type == Int64.self,  let out = n.int64Value as? T { return out }
+            if type == Int.self,    let out = n.intValue   as? T { return out }
+            if type == Double.self, let out = n.doubleValue as? T { return out }
+            if type == Bool.self,   let out = n.boolValue  as? T { return out }
+        }
+        // Arrays / dictionaries: safe to re-serialize and decode.
+        let fieldData = try JSONSerialization.data(withJSONObject: field, options: [.fragmentsAllowed])
         return try JSONDecoder().decode(T.self, from: fieldData)
     }
 

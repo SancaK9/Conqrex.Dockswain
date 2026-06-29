@@ -11,10 +11,10 @@ terminal on the server" button. It lives in the menu bar with a running/total ba
 The Linux version is a **KDE Plasma 6 plasmoid**: its entire UI is built on
 `org.kde.plasma.*` and `org.kde.kirigami`, hosted by `plasmashell` and installed
 with `kpackagetool6`. None of that exists on macOS, so the widget can't be "moved"
-by reorganizing folders — the UI had to be rewritten natively in **SwiftUI** (a
-draggable, edge-dockable menu-bar panel). What carries over is the proven backend
-approach: a small bash helper that runs docker over a multiplexed SSH connection and
-prints normalized output the app parses.
+by reorganizing folders — the UI had to be rewritten natively in **SwiftUI**
+(a draggable, edge-dockable menu-bar panel). What carries over is the proven backend approach: a small bash
+helper that runs docker over a multiplexed SSH connection and prints normalized
+output the app parses.
 
 The helper, [`Sources/Dockswain/Backend/dockswain-mac.sh`](Sources/Dockswain/Backend/dockswain-mac.sh),
 is the macOS port of the Linux `dockswain.sh`, with the Linux-only bits swapped out:

@@ -40,6 +40,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .sink { [weak self] in self?.updateBadge() }
             .store(in: &cancellables)
         updateBadge()
+
+        // Global shortcut to toggle the panel (configurable in Settings).
+        HotKey.shared.setCallback { [weak self] in self?.panel.toggle() }
+        HotKey.shared.reload()
     }
 
     @objc private func togglePanel() { panel.toggle() }

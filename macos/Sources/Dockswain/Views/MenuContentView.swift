@@ -67,6 +67,12 @@ struct MenuContentView: View {
             }
             Spacer()
             if state.isLoading { ProgressView().controlSize(.small) }
+            Button { panel.togglePin() } label: {
+                Image(systemName: panel.pinnedOpen ? "pin.fill" : "pin")
+                    .foregroundStyle(panel.pinnedOpen ? Color.accentColor : Color.primary)
+            }
+            .buttonStyle(.borderless)
+            .help(panel.pinnedOpen ? "Pinned open — click outside won't close it" : "Pin open (keep panel open when clicking elsewhere)")
             Button { state.refreshNow() } label: { Image(systemName: "arrow.clockwise") }
                 .buttonStyle(.borderless).help("Refresh")
                 .disabled(state.selectedServer == nil)
@@ -75,25 +81,31 @@ struct MenuContentView: View {
     }
 
     private var toolbar: some View {
-        HStack(spacing: 14) {
-            toolButton("rectangle.3.group", "Compose projects") { screen = .compose }
-            toolButton("internaldrive", "Disk usage & cleanup") { screen = .disk }
-            toolButton("folder", "File manager (SFTP)") { screen = .files }
-            toolButton("globe", "Nginx sites") { screen = .nginx }
+        HStack(alignment: .top, spacing: 6) {
+            toolButton("rectangle.3.group", "Compose", "Compose projects") { screen = .compose }
+            toolButton("internaldrive", "Disk", "Disk usage & cleanup") { screen = .disk }
+            toolButton("folder", "Files", "File manager (SFTP)") { screen = .files }
+            toolButton("globe", "Nginx", "Nginx sites & SSL") { screen = .nginx }
             Spacer()
-            Button { state.groupByNetwork.toggle() } label: {
-                Image(systemName: "point.3.connected.trianglepath.dotted")
-                    .foregroundStyle(state.groupByNetwork ? Color.accentColor : Color.primary)
-            }
-            .buttonStyle(.borderless).help("Group by network")
+            toolButton("point.3.connected.trianglepath.dotted", "Group",
+                       "Group by network", active: state.groupByNetwork) { state.groupByNetwork.toggle() }
         }
         .padding(.horizontal, 10).padding(.bottom, 6)
         .disabled(state.selectedServer == nil)
     }
 
-    private func toolButton(_ symbol: String, _ help: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) { Image(systemName: symbol) }
-            .buttonStyle(.borderless).help(help)
+    /// Icon + small caption label so each tool is self-explanatory.
+    private func toolButton(_ symbol: String, _ title: String, _ help: String,
+                            active: Bool = false, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            VStack(spacing: 2) {
+                Image(systemName: symbol).font(.system(size: 14))
+                Text(title).font(.system(size: 9))
+            }
+            .foregroundStyle(active ? Color.accentColor : Color.primary)
+            .frame(width: 52)
+        }
+        .buttonStyle(.borderless).help(help)
     }
 
     private var filterBar: some View {

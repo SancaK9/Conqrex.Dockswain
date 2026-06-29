@@ -87,6 +87,11 @@ struct SettingsView: View {
                 Toggle("Show live CPU/memory stats (slower)", isOn: $state.statsEnabled)
                 Toggle("Group containers by network", isOn: $state.groupByNetwork)
                 HStack {
+                    Text("Toggle shortcut")
+                    Spacer()
+                    ShortcutRecorder()
+                }
+                HStack {
                     Text("Nginx directory")
                     Spacer()
                     TextField("/etc/nginx", text: $state.nginxDir).frame(width: 160)
@@ -211,5 +216,57 @@ private struct ServerForm: View {
             Text(label).frame(width: 70, alignment: .leading)
             TextField(placeholder, text: text).textFieldStyle(.roundedBorder)
         }
+    }
+}
+
+/// Records a global shortcut for toggling the panel. While recording, a local event
+/// monitor captures the next modifier+key combo (Esc cancels). The combo is stored
+/// and the global hotkey re-registered immediately.
+struct ShortcutRecorder: View {
+    @State private var recording = false
+    @State private var display = ""
+    @State private var monitor: Any?
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Button(recording ? "Press keys…  (Esc to cancel)"
+                             : (display.isEmpty ? "Click to set" : display)) {
+                recording ? stop() : start()
+            }
+            .frame(minWidth: 150)
+            if !display.isEmpty && !recording {
+                Button { clear() } label: { Image(systemName: "xmark.circle.fill") }
+                    .buttonStyle(.borderless).foregroundStyle(.secondary).help("Clear shortcut")
+            }
+        }
+        .onAppear {
+            if let (code, mods) = HotKey.stored { display = HotKey.describe(keyCode: code, modifiers: mods) }
+        }
+        .onDisappear { stop() }
+    }
+
+    private func start() {
+        recording = true
+        monitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown]) { e in
+            if e.keyCode == 53 { stop(); return nil }              // Esc cancels
+            let mods = e.modifierFlags.intersection([.command, .option, .control, .shift])
+            guard !mods.isEmpty else { return nil }                // require a modifier
+            HotKey.stored = (UInt32(e.keyCode), mods)
+            HotKey.shared.reload()
+            display = HotKey.describe(keyCode: UInt32(e.keyCode), modifiers: mods)
+            stop()
+            return nil                                             // swallow the event
+        }
+    }
+
+    private func stop() {
+        recording = false
+        if let m = monitor { NSEvent.removeMonitor(m); monitor = nil }
+    }
+
+    private func clear() {
+        HotKey.stored = nil
+        HotKey.shared.reload()
+        display = ""
     }
 }
