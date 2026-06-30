@@ -1,0 +1,43 @@
+name: macOS build
+
+# Compile the SwiftUI menu-bar app and package Dockswain.app on a macOS runner, so a
+# change that breaks the macOS build is caught in CI (the other workflows only cover
+# the Linux plasmoid / pacman repo). Runs only when the macOS sources change.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'macos/**'
+      - '.github/workflows/macos-build.yml'
+  pull_request:
+    paths:
+      - 'macos/**'
+      - '.github/workflows/macos-build.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build Dockswain.app
+    runs-on: macos-14          # Apple Silicon; macOS 14 ships a recent Xcode/Swift
+    defaults:
+      run:
+        working-directory: macos
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show toolchain
+        run: swift --version
+
+      # build-app.sh runs `swift build -c release`, assembles the .app bundle, and
+      # ad-hoc-signs it (the stable self-signed identity is absent on CI, so it falls
+      # back to "-", which is fine for a build check).
+      - name: Build & package
+        run: ./build-app.sh
+
+      - name: Upload app bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: Dockswain.app
+          path: macos/Dockswain.app
+          if-no-files-found: error
