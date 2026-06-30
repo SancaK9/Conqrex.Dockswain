@@ -2,7 +2,7 @@
 
 pkgname=dockswain
 _id=com.conqrex.dockswain
-pkgver=0.8.3
+pkgver=0.8.4
 pkgrel=1
 pkgdesc='KDE Plasma 6 widget to manage Docker on a remote host over SSH (containers, logs, compose, SFTP, nginx)'
 arch=('any')
