@@ -135,6 +135,19 @@ struct SettingsView: View {
 
                 Divider().padding(.vertical, 4)
 
+                // Health & notifications
+                Text("HEALTH & NOTIFICATIONS").font(.caption).foregroundStyle(.secondary)
+                Toggle("Notify on container health changes", isOn: $state.notificationsEnabled)
+                if state.notificationsEnabled {
+                    Toggle("Stopped or crashed", isOn: $state.notifyOnStop)
+                    Toggle("Became unhealthy / recovered", isOn: $state.notifyOnUnhealthy)
+                    Toggle("Restart-looping", isOn: $state.notifyOnRestart)
+                    Text("Watches every open server tab. macOS may ask for notification permission the first time.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+
+                Divider().padding(.vertical, 4)
+
                 // File manager & transfers
                 Text("FILES & TRANSFERS").font(.caption).foregroundStyle(.secondary)
                 Toggle("Show hidden files (dotfiles)", isOn: $state.showHiddenFiles)

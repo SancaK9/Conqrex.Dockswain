@@ -33,6 +33,23 @@ final class AppState: ObservableObject {
     @Published var confirmDestructive: Bool = UDefault.bool("confirmDestructive", true) {
         didSet { UserDefaults.standard.set(confirmDestructive, forKey: "confirmDestructive") }
     }
+
+    // Health notifications (see HealthMonitor). Master + per-event toggles.
+    @Published var notificationsEnabled: Bool = UDefault.bool("notificationsEnabled", false) {
+        didSet {
+            UserDefaults.standard.set(notificationsEnabled, forKey: "notificationsEnabled")
+            if notificationsEnabled { HealthMonitor.shared.requestAuthorization() }
+        }
+    }
+    @Published var notifyOnStop: Bool = UDefault.bool("notifyOnStop", true) {
+        didSet { UserDefaults.standard.set(notifyOnStop, forKey: "notifyOnStop") }
+    }
+    @Published var notifyOnUnhealthy: Bool = UDefault.bool("notifyOnUnhealthy", true) {
+        didSet { UserDefaults.standard.set(notifyOnUnhealthy, forKey: "notifyOnUnhealthy") }
+    }
+    @Published var notifyOnRestart: Bool = UDefault.bool("notifyOnRestart", true) {
+        didSet { UserDefaults.standard.set(notifyOnRestart, forKey: "notifyOnRestart") }
+    }
     @Published var hideExitedDefault: Bool = UserDefaults.standard.bool(forKey: "hideExitedDefault") {
         didSet { UserDefaults.standard.set(hideExitedDefault, forKey: "hideExitedDefault") }
     }
@@ -109,6 +126,10 @@ final class AppState: ObservableObject {
         return active?.statusMessage ?? ""
     }
     var badge: String { active?.badge ?? "" }
+
+    /// Any open server has an unhealthy or restart-looping container — drives the
+    /// menu-bar warning marker so a problem is visible without opening the panel.
+    var hasAlerts: Bool { sessions.contains { $0.hasAlerts } }
 
     /// Configured servers that aren't open yet (for the "+" menu).
     var unopenedServers: [Server] { servers.filter { s in !sessions.contains { $0.id == s.id } } }

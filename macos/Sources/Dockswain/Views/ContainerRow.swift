@@ -16,6 +16,13 @@ struct ContainerRow: View {
             Circle()
                 .fill(stateColor)
                 .frame(width: 8, height: 8)
+                // A ring around the dot flags a healthcheck verdict at a glance.
+                .overlay {
+                    if container.health == .unhealthy || container.health == .starting {
+                        Circle().stroke(stateColor, lineWidth: 1.5).frame(width: 13, height: 13)
+                    }
+                }
+                .help(healthHelp)
 
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 4) {
@@ -23,6 +30,13 @@ struct ContainerRow: View {
                         Image(systemName: "pin.fill").font(.system(size: 8)).foregroundStyle(.tint)
                     }
                     Text(container.name).font(.system(size: 12, weight: .medium)).lineLimit(1)
+                    if container.health == .unhealthy {
+                        Image(systemName: "heart.slash.fill").font(.system(size: 8)).foregroundStyle(.red)
+                            .help("Healthcheck failing")
+                    } else if container.health == .starting {
+                        Image(systemName: "hourglass").font(.system(size: 8)).foregroundStyle(.yellow)
+                            .help("Healthcheck starting")
+                    }
                 }
                 Text(container.image).font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1)
             }
@@ -76,12 +90,27 @@ struct ContainerRow: View {
     }
 
     private var stateColor: Color {
+        // Health overrides the plain running colour so a failing healthcheck reads red.
+        switch container.health {
+        case .unhealthy: return .red
+        case .starting:  return .yellow
+        case .healthy, .none: break
+        }
         switch container.state.lowercased() {
         case "running": return .green
         case "paused": return .yellow
         case "exited", "dead": return .red
         case "created", "restarting": return .orange
         default: return .gray
+        }
+    }
+
+    private var healthHelp: String {
+        switch container.health {
+        case .healthy:   return "Healthy · \(container.status)"
+        case .unhealthy: return "Unhealthy · \(container.status)"
+        case .starting:  return "Healthcheck starting · \(container.status)"
+        case .none:      return container.status
         }
     }
 }

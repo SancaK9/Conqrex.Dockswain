@@ -50,6 +50,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func updateBadge() {
         let badge = state.badge
-        statusItem.button?.title = badge.isEmpty ? "⚓" : "⚓ \(badge)"
+        let warn = state.hasAlerts ? " ⚠️" : ""
+        statusItem.button?.title = (badge.isEmpty ? "⚓" : "⚓ \(badge)") + warn
     }
 }

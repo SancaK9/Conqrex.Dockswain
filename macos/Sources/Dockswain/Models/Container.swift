@@ -17,6 +17,42 @@ struct Container: Identifiable, Decodable, Equatable {
 
     var isRunning: Bool { state.lowercased() == "running" }
 
+    /// Docker's healthcheck verdict, parsed out of the `Status` string
+    /// (e.g. "Up 2 hours (healthy)" / "(unhealthy)" / "(health: starting)").
+    enum Health { case none, starting, healthy, unhealthy }
+    var health: Health {
+        let s = status.lowercased()
+        if s.contains("(unhealthy)") { return .unhealthy }
+        if s.contains("health: starting") { return .starting }
+        if s.contains("(healthy)") { return .healthy }
+        return .none
+    }
+
+    /// A coarse lifecycle state used to detect transitions between polls. Health is
+    /// folded in so that running→unhealthy and unhealthy→running register as changes.
+    enum Lifecycle: Equatable { case running, unhealthy, starting, restarting, paused, stopped }
+    var lifecycle: Lifecycle {
+        switch state.lowercased() {
+        case "running":
+            switch health {
+            case .unhealthy: return .unhealthy
+            case .starting:  return .starting
+            default:         return .running
+            }
+        case "restarting": return .restarting
+        case "paused":     return .paused
+        default:           return .stopped   // exited | dead | created | removing | ...
+        }
+    }
+
+    /// Exit code parsed from an exited container's status ("Exited (137) …").
+    /// nil when not exited or unpar. A non-zero code means it crashed.
+    var exitCode: Int? {
+        guard let open = status.range(of: "Exited ("),
+              let close = status.range(of: ")", range: open.upperBound..<status.endIndex) else { return nil }
+        return Int(status[open.upperBound..<close.lowerBound])
+    }
+
     enum CodingKeys: String, CodingKey {
         case id = "ID"
         case name = "Names"
