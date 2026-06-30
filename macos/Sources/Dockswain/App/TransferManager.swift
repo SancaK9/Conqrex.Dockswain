@@ -61,12 +61,14 @@ final class TransferManager: ObservableObject {
         out.fileHandleForReading.readabilityHandler = { [weak self] h in
             let data = h.availableData
             guard !data.isEmpty, let chunk = String(data: data, encoding: .utf8) else { return }
-            Task { @MainActor in self?.ingest(id: id, chunk: chunk) }
+            guard let self else { return }
+            Task { @MainActor in self.ingest(id: id, chunk: chunk) }
         }
         p.terminationHandler = { [weak self] proc in
             let status = proc.terminationStatus
             let signalled = proc.terminationReason == .uncaughtSignal
-            Task { @MainActor in self?.terminated(id: id, status: status, signalled: signalled) }
+            guard let self else { return }
+            Task { @MainActor in self.terminated(id: id, status: status, signalled: signalled) }
         }
 
         do { try p.run(); procs[id] = p }
