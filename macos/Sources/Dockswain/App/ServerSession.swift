@@ -16,6 +16,9 @@ final class ServerSession: ObservableObject, Identifiable {
     @Published var isLoading = false
 
     private var backend: Backend
+    /// Last poll's containers (keyed by full id) for health-transition detection.
+    /// nil until the first successful list, so a fresh tab never notifies retroactively.
+    private var lastSnapshot: [String: Container]?
     private var pollTask: Task<Void, Never>?
     private var statsTask: Task<Void, Never>?
     private var refreshInterval: Double
@@ -38,6 +41,11 @@ final class ServerSession: ObservableObject, Identifiable {
     var badge: String {
         guard !containers.isEmpty else { return "" }
         return "\(containers.filter(\.isRunning).count)/\(containers.count)"
+    }
+
+    /// True if any container is in a state worth flagging (unhealthy or restart-looping).
+    var hasAlerts: Bool {
+        containers.contains { $0.lifecycle == .unhealthy || $0.lifecycle == .restarting }
     }
 
     // MARK: - Lifecycle
@@ -105,6 +113,11 @@ final class ServerSession: ObservableObject, Identifiable {
         do {
             let list = try await backend.list(server)
             if Task.isCancelled { return }
+            // Health monitoring: diff this poll against the last and notify on changes.
+            // The baseline (nil on a fresh/reconnected tab) is recorded silently.
+            let snapshot = Dictionary(list.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+            HealthMonitor.shared.process(previous: lastSnapshot, current: snapshot, server: server)
+            lastSnapshot = snapshot
             containers = list.sorted { a, b in
                 if a.isRunning != b.isRunning { return a.isRunning }
                 return a.name.localizedCaseInsensitiveCompare(b.name) == .orderedAscending
@@ -116,6 +129,9 @@ final class ServerSession: ObservableObject, Identifiable {
         } catch {
             if Task.isCancelled { return }
             containers = []
+            // Drop the baseline so a reconnect re-establishes it silently instead of
+            // firing "everything stopped" when the server simply went unreachable.
+            lastSnapshot = nil
             statusMessage = error.localizedDescription
         }
     }
