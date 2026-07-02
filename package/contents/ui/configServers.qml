@@ -94,6 +94,40 @@ KCM.SimpleKCM {
         function exec(c) { if (c) connectSource(c); }
     }
 
+    // Detects the current username for a freshly-added local server row, so the
+    // user@host field is filled with <you>@localhost instead of being hardcoded.
+    Plasma5Support.DataSource {
+        id: localUser
+        engine: "executable"
+        connectedSources: []
+        property int targetIndex: -1
+        onNewData: (source, data) => {
+            disconnectSource(source);
+            var u = ("" + (data["stdout"] || "")).trim();
+            if (u && targetIndex >= 0 && targetIndex < serversModel.count) {
+                serversModel.setProperty(targetIndex, "user", u);
+                page.save();
+            }
+            targetIndex = -1;
+        }
+        function detect(idx) { targetIndex = idx; connectSource("id -un"); }
+    }
+
+    // Appends a ready-to-use local Docker server (SSH to localhost, key/agent auth)
+    // and fills in the current username. Connecting still needs sshd running and the
+    // key usable non-interactively — the inline note below spells that out.
+    function addLocal() {
+        // reuse an existing localhost row rather than piling up duplicates
+        for (var i = 0; i < serversModel.count; i++) {
+            var e = serversModel.get(i);
+            if (e.host === "localhost" && e.port === 22) { localUser.detect(i); return; }
+        }
+        serversModel.append({ label: i18n("Local Docker"), user: "", host: "localhost",
+            port: 22, key: "", auth: "key", remmina: "", hasSecret: false, useSudo: false });
+        page.save();
+        localUser.detect(serversModel.count - 1);
+    }
+
     function setPassword(label, user, host, port) {
         var key = page.secretKey(user, host, port);
         var script = "secret-tool store --label=" + page.shq("Dockswain — " + (label || key))
@@ -133,6 +167,13 @@ KCM.SimpleKCM {
                 onClicked: { serversModel.append({ label: "", user: "root", host: "", port: 22, key: "", auth: "password", remmina: "", hasSecret: false, useSudo: false }); page.save(); }
             }
             QQC2.Button {
+                text: i18n("Add local")
+                icon.name: "computer"
+                QQC2.ToolTip.visible: hovered
+                QQC2.ToolTip.text: i18n("Add this machine — SSH to localhost with key/agent auth. Needs sshd running and passwordless SSH to yourself.")
+                onClicked: page.addLocal()
+            }
+            QQC2.Button {
                 text: i18n("Import from Remmina")
                 icon.name: "document-import"
                 onClicked: importer.go("hosts")
@@ -156,7 +197,7 @@ KCM.SimpleKCM {
             Layout.fillWidth: true
             visible: serversModel.count === 0
             type: Kirigami.MessageType.Information
-            text: i18n("No servers yet. Add one manually, or import your SSH hosts from Remmina or FileZilla (SFTP sites only). Imported password servers reuse the saved password from your keyring — no copy-paste. For manual servers, click “Set password” — it is stored securely in your KWallet/keyring, never in a file.")
+            text: i18n("No servers yet. Click “Add local” for the Docker on this machine, add one manually, or import your SSH hosts from Remmina or FileZilla (SFTP sites only). Imported password servers reuse the saved password from your keyring — no copy-paste. For manual servers, click “Set password” — it is stored securely in your KWallet/keyring, never in a file.")
         }
 
         Repeater {
